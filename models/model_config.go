@@ -24,7 +24,7 @@ type ConfigModel struct {
 	Cores      int64  `gorm:"column:cores;default:1"`       // 并发数，默认1
 	Enable     bool   `gorm:"column:enable;default:f"`      // 启用配置
 	/* XXX Target现行逻辑说明
-	Target 配置目标目录时，可以指定下述几种类型：
+	target 配置目标目录时，可以指定下述几种类型：
 	1. 云存储（AWS S3）
 	{
 	    "target_type": "S3",

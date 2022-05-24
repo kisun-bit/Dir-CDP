@@ -2,7 +2,6 @@ package logic
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"github.com/journeymidnight/aws-sdk-go/aws"
@@ -25,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,43 +60,54 @@ const (
 // 在CDPING状态下执行恢复操作，如何处理？？？
 // 恢复时，为恢复文件加上统一的恢复标志，这样一来，即使恢复至原路径，
 // CDPExecutor也能在捕捉变更文件时，忽略掉恢复文件
+// TODO 使用“文件锁”针对目录实现并发互斥
 type CDPExecutor struct {
-	config       *models.ConfigModel
-	dp           *models.DBProxy
-	task         *models.BackupTaskModel
-	incrQueue    chan models.FileFlowModel // 增量数据通道，该通道永久开放
-	fullQueue    chan models.FileFlowModel // 全量数据通道，该通道在全量备份完成后关闭
-	ctx          context.Context
-	cancel       context.CancelFunc // 取消事件
-	wg           *sync.WaitGroup
+	config    *models.ConfigModel
+	dp        *models.DBProxy
+	task      *models.BackupTaskModel
+	incrQueue chan models.FileFlowModel // 增量数据通道，该通道永久开放
+	fullQueue chan models.FileFlowModel // 全量数据通道，该通道在全量备份完成后关闭
+	fullWG    *sync.WaitGroup
+	incrWG    *sync.WaitGroup
+	fullPool  *ants.Pool
+	incrPool  *ants.Pool
+	//ctx          context.Context
+	//cancel       context.CancelFunc // 取消事件
 	isReload     bool // 当服务重启时，此属性为True
 	targetType   TargetType
-	Server       models.ClientInfo // 备份服务器信息
-	Origin       models.ClientInfo // 备份源机信息
-	Target       models.ClientInfo // 备份目标机
-	StorageHost  models.TargetHost // 备份目标机存储信息
-	StorageS3    models.TargetS3   // 备份目标对象存储信息
-	HostSession  string
-	Grep         *Grep
-	S3Session    *session.Session
-	S3Client     gos3.S3Client
-	Watcher      *nt_notify.Win32Watcher
-	WatcherQueue chan nt_notify.FileWatchingObj
-	Walker       *Walker
-	WalkerQueue  chan nt_notify.FileWatchingObj
-	Pool         *ants.Pool
-	StartTs      int64
+	server       models.ClientInfo // 备份服务器信息
+	origin       models.ClientInfo // 备份源机信息
+	target       models.ClientInfo // 备份目标机
+	storageHost  models.TargetHost // 备份目标机存储信息
+	storageS3    models.TargetS3   // 备份目标对象存储信息
+	hostSession  string
+	grep         *Grep
+	s3Session    *session.Session
+	s3Client     gos3.S3Client
+	watcher      *nt_notify.Win32Watcher
+	watcherQueue chan nt_notify.FileWatchingObj
+	walker       *Walker
+	walkerQueue  chan nt_notify.FileWatchingObj
+	startTs      int64
+	stopNotify   *int32    // 用户禁用/取消信号、异常终止信号
+	wr           *Recorder // 用于对装载变更事件的通道WatcherQueue做相邻去重处理
 }
 
 func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
 	ce = new(CDPExecutor)
 	ce.config = config
 	ce.dp = dp
+
 	ce.incrQueue = make(chan models.FileFlowModel, meta.BackupChanSize)
 	ce.fullQueue = make(chan models.FileFlowModel, meta.BackupChanSize)
-	ce.ctx, ce.cancel = context.WithCancel(context.Background())
-	ce.wg = &sync.WaitGroup{}
-	ce.StartTs = time.Now().Unix()
+	ce.fullWG = &sync.WaitGroup{}
+	ce.incrWG = &sync.WaitGroup{}
+	//ce.ctx, ce.cancel = context.WithCancel(context.Background())
+
+	ce.stopNotify = new(int32)
+	ce.wr = new(Recorder)
+	ce.wr.m = new(sync.Map)
+	ce.startTs = time.Now().Unix()
 	logger.Fmt.Infof("init CDPExecutor is ok")
 	return
 }
@@ -179,27 +190,50 @@ func (c *CDPExecutor) Start() (err error) {
 		logger.Fmt.Errorf("%v.Start RegisterTable ERR=%v", c.Str(), err)
 		return
 	}
-	go func() {
-		c.logic()
-	}()
+
+	go c.monitorStopNotify()
+	go c.logic()
+
 	return
+}
+
+func (c *CDPExecutor) isStopped() bool {
+	return atomic.LoadInt32(c.stopNotify) == 1
+}
+
+func (c *CDPExecutor) monitorStopNotify() {
+	logger.Fmt.Infof("%v.monitorStopNotify 开始监控终止事件、用户取消事件等", c.Str())
+	for {
+		ticker := time.NewTicker(5 * time.Second)
+		for range ticker.C {
+			if models.IsEnable(c.dp.DB, c.config.ID) {
+				continue
+			}
+			atomic.StoreInt32(c.stopNotify, 1)
+			ticker.Stop()
+			logger.Fmt.Infof("%v.monitorStopNotify【终止】", c.Str())
+		}
+	}
 }
 
 func (c *CDPExecutor) logic() {
 	var err error
-	defer c.stopExecutorByError(err)
 
 	if err = c.initArgs(); err != nil {
 		logger.Fmt.Errorf("%v.logic initArgs err=%v", c.Str(), err)
 		return
 	}
-	InitRecorder()
 
 	/*对于启动流程的说明如下：
 	启动任务方式有两种
 	1. 重载未完成任务（断网、重启、宕机），避免直接全量
 	2. 执行新任务（远程调用）
 	*/
+
+	if err = models.DeleteNotUploadFileFlows(c.dp.DB, c.config.ID); err != nil {
+		return
+	}
+
 	if c.isReload {
 		if err = c.logicWhenReload(); err != nil {
 			return
@@ -211,7 +245,8 @@ func (c *CDPExecutor) logic() {
 	}
 
 	c.uploadQueue2Storage()
-	c.wg.Wait()
+	c.fullWG.Wait()
+	c.incrWG.Wait()
 }
 
 func (c *CDPExecutor) logicWhenReload() (err error) {
@@ -260,55 +295,55 @@ func (c *CDPExecutor) logicWhenNormal() (err error) {
 
 func (c *CDPExecutor) initArgs() (err error) {
 	// 黑白名单过滤
-	c.Grep = NewGrep(c.config.Include, c.config.Exclude)
+	c.grep = NewGrep(c.config.Include, c.config.Exclude)
 
 	// 备份服务器信息
-	if c.Server, err = models.QueryHostInfoByHostID(c.dp.DB, c.config.Server); err != nil {
+	if c.server, err = models.QueryHostInfoByHostID(c.dp.DB, c.config.Server); err != nil {
 		return
 	}
-	logger.Fmt.Infof("%v.initArgs Server ->%v", c.Str(), c.Server)
+	logger.Fmt.Infof("%v.initArgs server ->%v", c.Str(), c.server)
 
 	// 源机信息
-	if c.Origin, err = models.QueryHostInfoByHostID(c.dp.DB, c.config.Origin); err != nil {
+	if c.origin, err = models.QueryHostInfoByHostID(c.dp.DB, c.config.Origin); err != nil {
 		return
 	}
-	logger.Fmt.Infof("%v.initArgs Origin ->%v", c.Str(), c.Origin)
+	logger.Fmt.Infof("%v.initArgs origin ->%v", c.Str(), c.origin)
 
 	if models.Is2Host(*c.config) {
 		// 目标机信息
-		if c.Target, err = models.QueryTargetHostInfoByConf(c.dp.DB, c.config.ID); err != nil {
+		if c.target, err = models.QueryTargetHostInfoByConf(c.dp.DB, c.config.ID); err != nil {
 			return
 		}
-		logger.Fmt.Infof("%v.initArgs 2h TargetHost ->%v", c.Str(), c.Target)
+		logger.Fmt.Infof("%v.initArgs 2h TargetHost ->%v", c.Str(), c.target)
 
 		// 目标机目标存储路径
-		if c.StorageHost, err = models.QueryTargetConfHostByConf(c.dp.DB, c.config.ID); err != nil {
+		if c.storageHost, err = models.QueryTargetConfHostByConf(c.dp.DB, c.config.ID); err != nil {
 			return
 		}
-		logger.Fmt.Infof("%v.initArgs 2h TargetConf ->%v", c.Str(), c.StorageHost)
+		logger.Fmt.Infof("%v.initArgs 2h TargetConf ->%v", c.Str(), c.storageHost)
 
 		// 目标机上传接口地址
-		c.HostSession = fmt.Sprintf("http://%s:%v/api/v1/upload", c.Target.Address, meta.AppPort)
-		logger.Fmt.Infof("%v.initArgs 2h UploadSession ->%v", c.Str(), c.HostSession)
+		c.hostSession = fmt.Sprintf("http://%s:%v/api/v1/upload", c.target.Address, meta.AppPort)
+		logger.Fmt.Infof("%v.initArgs 2h UploadSession ->%v", c.Str(), c.hostSession)
 		c.targetType = TTHost
 
 	} else if models.Is2S3(*c.config) {
 		// 目标对象存储相关配置
-		if c.StorageS3, err = models.QueryTargetConfS3ByConf(c.dp.DB, c.config.ID); err != nil {
+		if c.storageS3, err = models.QueryTargetConfS3ByConf(c.dp.DB, c.config.ID); err != nil {
 			return
 		}
-		logger.Fmt.Infof("%v.initArgs 2s3 TargetS3Conf ->%v", c.Str(), c.StorageS3)
+		logger.Fmt.Infof("%v.initArgs 2s3 TargetS3Conf ->%v", c.Str(), c.storageS3)
 
 		// 创建目标对象存储目标桶
-		c.S3Session, c.S3Client = tools.NewS3Client(
-			c.StorageS3.TargetConfS3.AccessKey,
-			c.StorageS3.TargetConfS3.SecretKey,
-			c.StorageS3.TargetConfS3.Endpoint,
-			c.StorageS3.TargetConfS3.Region,
-			c.StorageS3.TargetConfS3.SSL,
-			c.StorageS3.TargetConfS3.Path)
+		c.s3Session, c.s3Client = tools.NewS3Client(
+			c.storageS3.TargetConfS3.AccessKey,
+			c.storageS3.TargetConfS3.SecretKey,
+			c.storageS3.TargetConfS3.Endpoint,
+			c.storageS3.TargetConfS3.Region,
+			c.storageS3.TargetConfS3.SSL,
+			c.storageS3.TargetConfS3.Path)
 		c.targetType = TTS3
-		if err = c.createBucket(c.StorageS3.TargetConfS3.Bucket); err != nil {
+		if err = c.createBucket(c.storageS3.TargetConfS3.Bucket); err != nil {
 			return
 		}
 
@@ -321,8 +356,12 @@ func (c *CDPExecutor) initArgs() (err error) {
 	if numCores < 0 {
 		numCores = runtime.NumCPU()
 	}
-	if c.Pool, err = ants.NewPool(numCores); err != nil {
-		logger.Fmt.Errorf("%v.initArgs NewPool ERR=%v", c.Str(), err)
+	if c.fullPool, err = ants.NewPool(numCores); err != nil {
+		logger.Fmt.Errorf("%v.initArgs NewFullPool ERR=%v", c.Str(), err)
+		return
+	}
+	if c.incrPool, err = ants.NewPool(numCores); err != nil {
+		logger.Fmt.Errorf("%v.initArgs NewIncrPool ERR=%v", c.Str(), err)
 		return
 	}
 
@@ -332,7 +371,7 @@ func (c *CDPExecutor) initArgs() (err error) {
 
 func (c *CDPExecutor) createBucket(bucket string) (err error) {
 
-	_, err = c.S3Client.Client.HeadBucket(&s3.HeadBucketInput{
+	_, err = c.s3Client.Client.HeadBucket(&s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err == nil { // existed
@@ -340,7 +379,7 @@ func (c *CDPExecutor) createBucket(bucket string) (err error) {
 		return
 	}
 
-	_, err = c.S3Client.Client.CreateBucket(&s3.CreateBucketInput{
+	_, err = c.s3Client.Client.CreateBucket(&s3.CreateBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -348,7 +387,7 @@ func (c *CDPExecutor) createBucket(bucket string) (err error) {
 		return err
 	}
 
-	err = c.S3Client.Client.WaitUntilBucketExists(&s3.HeadBucketInput{
+	err = c.s3Client.Client.WaitUntilBucketExists(&s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -384,31 +423,31 @@ func (c *CDPExecutor) uploadIncrQueue() {
 func (c *CDPExecutor) uploadDispatcher(full bool) {
 	var (
 		err   error
+		wg    = c.incrWG
 		queue = c.incrQueue
+		pool  = c.incrPool
 	)
 
-	defer c.stopExecutorByError(err)
 	if full {
 		queue = c.fullQueue
+		pool = c.fullPool
 		logger.Fmt.Infof("%v.uploadDispatcher consuming fullQueue", c.Str())
 	} else {
 		logger.Fmt.Infof("%v.uploadDispatcher consuming incrQueue", c.Str())
 	}
 
 	for fwo := range queue {
+		if c.isStopped() {
+			logger.Fmt.Warnf("%v.uploadDispatcher【终止】", c.Str())
+			return
+		}
 		if !c.isValidPath(fwo.Path, fwo.Time) {
 			continue
 		}
-		logger.Fmt.Debugf("[上传] <<<<<<<<<<<<<<<<<<<<<<<<< %v", fwo.Path)
-		select {
-		case <-c.ctx.Done():
-			logger.Fmt.Warnf("%v.uploadDispatcher !!!!!!!!!!!!!!!!!!!! 取消事件", c.Str())
+		logger.Fmt.Debugf("[监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", fwo.Path)
+		wg.Add(1)
+		if err = c.uploadOneFile(pool, fwo, wg); err != nil {
 			return
-		default:
-			c.wg.Add(1)
-			if err = c.uploadOneFile(fwo); err != nil {
-				return
-			}
 		}
 	}
 
@@ -421,18 +460,17 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		logger.Fmt.Errorf("%v.uploadDispatcher failed to convert CDPING status, err=%v", c.Str(), err)
 		return
 	}
-	logger.Fmt.Infof("%v.uploadDispatcher exit and task(%v) in CDPING status", c.Str(), c.task.ID)
+	logger.Fmt.Infof("%v.uploadDispatcher exit，task(%v) 进入【CDPING】状态", c.Str(), c.task.ID)
 }
 
-func (c *CDPExecutor) uploadOneFile(fwo models.FileFlowModel) (err error) {
-	return c.Pool.Submit(func() {
+func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.FileFlowModel, wg *sync.WaitGroup) (err error) {
+	return pool.Submit(func() {
 		var (
 			err  error
 			last models.FileFlowModel
 		)
 
-		defer c.wg.Done()
-		defer c.stopExecutorByError(err)
+		defer wg.Done()
 
 		/* 存在同名文件的上传逻辑
 
@@ -455,6 +493,7 @@ func (c *CDPExecutor) uploadOneFile(fwo models.FileFlowModel) (err error) {
 			return
 		}
 		if !models.IsEnable(c.dp.DB, c.config.ID) {
+			logger.Fmt.Warnf("%v.uploadOneFile【终止】", c.Str())
 			return
 		}
 		if err := c.upload2DiffStorage(fwo); err != nil {
@@ -497,7 +536,6 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.FileFlowModel) (err error) {
 	} else if models.Is2S3(*c.config) {
 		return c.upload2s3(ffm, fp)
 	} else {
-		c.cancel()
 		return fmt.Errorf("unsupported config-target(%v)", c.config.Target)
 	}
 }
@@ -513,7 +551,7 @@ func (c *CDPExecutor) upload2host(ffm models.FileFlowModel, fp io.Reader) (err e
 		return
 	}
 
-	r, _ := http.NewRequest("POST", c.HostSession, body)
+	r, _ := http.NewRequest("POST", c.hostSession, body)
 	r.Header.Add("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
 	if _, err = client.Do(r); err != nil {
@@ -524,14 +562,14 @@ func (c *CDPExecutor) upload2host(ffm models.FileFlowModel, fp io.Reader) (err e
 
 func (c *CDPExecutor) upload2s3(ffm models.FileFlowModel, fp io.Reader) (err error) {
 	uploader := s3manager.NewUploader(
-		c.S3Session,
+		c.s3Session,
 		func(u *s3manager.Uploader) {
 			u.MaxUploadParts = s3manager.MaxUploadParts
 		},
 	)
 
 	_, err = uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(c.StorageS3.TargetConfS3.Bucket),
+		Bucket: aws.String(c.storageS3.TargetConfS3.Bucket),
 		Key:    aws.String(tools.GenerateS3Key(filepath.Join(ffm.Parent, ffm.Name+ffm.Tag), c.config.ID)),
 		Body:   fp,
 	})
@@ -555,22 +593,20 @@ func (c *CDPExecutor) incr() {
 
 func (c *CDPExecutor) scanNotify() {
 	var err error
-	defer c.stopExecutorByError(err)
 	defer close(c.fullQueue)
 
 	if err = c.startWalker(); err != nil {
 		return
 	}
 
-	for fwo := range c.WalkerQueue {
-		select {
-		case <-c.ctx.Done():
-			logger.Fmt.Warnf("%v.scanNotify !!!!!!!!!!!!!!!!!!!! 取消事件", c.Str())
+	for fwo := range c.walkerQueue {
+		if c.isStopped() {
+			logger.Fmt.Warnf("%v.scanNotify【终止】", c.Str())
+			c.walker.setStop()
 			return
-		default:
-			if err = c.putFile2FullOrIncrQueue(fwo, true); err != nil {
-				return
-			}
+		}
+		if err = c.putFile2FullOrIncrQueue(fwo, true); err != nil {
+			return
 		}
 	}
 
@@ -605,71 +641,55 @@ func (r *Recorder) Load() (nt_notify.FileWatchingObj, int64, bool) {
 	return last.(nt_notify.FileWatchingObj), update.(int64), true
 }
 
-var rd *Recorder
-var locker_ sync.Once
-
-func InitRecorder() {
-	locker_.Do(func() {
-		rd = new(Recorder)
-		rd.m = new(sync.Map)
-	})
-}
-
 func (c *CDPExecutor) fsNotify() {
-	var (
-		err error
-	)
-
-	defer c.stopExecutorByError(err)
+	var err error
 	if err = c.startWatcher(); err != nil {
 		return
 	}
 
 	go c.putFileEventWhenTimeout()
 
-	for {
-		select {
-		case <-c.ctx.Done():
-			logger.Fmt.Warnf("%v.fsNotify !!!!!!!!!!!!!!!!!!!! 取消事件", c.Str())
+	for fwo := range c.watcherQueue {
+		if c.isStopped() {
+			logger.Fmt.Warnf("%v.fsNotify【终止】", c.Str())
+			c.watcher.SetStop()
 			return
-		case fwo := <-c.WatcherQueue:
-			/*连续文件变更记录的去重
-			补充：
-			1. 若一个文件处于持续写状态时，其ModTime会一直更新为最新时间
+		}
+		/*连续文件变更记录的去重
+		补充：
+		1. 若一个文件处于持续写状态时，其ModTime会一直更新为最新时间
 
-			*****************去重思路****************
-			由于通道cs中取出的记录可能为相邻相同的连续记录，如下：
-			A, A, B, B, B, B, C, D, D, D..........
-			上传至incrQueue的条件如下：
-			1. 5s内文件没有写入操作；
-			2. 捕捉到新的不同名文件的变更记录就上传last
-			*/
-			switch fwo.Event {
-			case meta.Win32EventDelete:
-				// do nothing
-			case meta.Win32EventCreate:
-				fallthrough
-			case meta.Win32EventRenameFrom:
-				fallthrough
-			case meta.Win32EventRenameTo:
-				fallthrough
-			case meta.Win32EventUpdate:
-				//logger.Fmt.Debugf("[捕捉] >>>>>>>>>>>>>>>>>>> %v | %v", fwo.Path, fwo.Event)
-				if last, _, ok := rd.Load(); !ok {
-					last = fwo
-					rd.Store(fwo)
-					break
-				} else {
-					// 捕捉到新的不同名文件的变更记录
-					if fwo.Path != last.Path {
-						err = c.putFile2FullOrIncrQueue(last, false)
-						if err != nil {
-							return
-						}
-						rd.Store(fwo) // 用新文件覆盖掉旧文件记录
-					} else {
-						rd.Store(fwo) // 必须对同名记录做一次更新Event，否则会影响文件的mtime属性
+		*****************去重思路****************
+		由于通道cs中取出的记录可能为相邻相同的连续记录，如下：
+		A, A, B, B, B, B, C, D, D, D..........
+		上传至incrQueue的条件如下：
+		1. 5s内文件没有写入操作；
+		2. 捕捉到新的不同名文件的变更记录就上传last
+		*/
+		switch fwo.Event {
+		case meta.Win32EventDelete:
+			// do nothing
+		case meta.Win32EventCreate:
+			fallthrough
+		case meta.Win32EventRenameFrom:
+			fallthrough
+		case meta.Win32EventRenameTo:
+			fallthrough
+		case meta.Win32EventUpdate:
+			if last, _, ok := c.wr.Load(); !ok {
+				last = fwo
+				c.wr.Store(fwo)
+				break
+			} else {
+				// 捕捉到新的不同名文件的变更记录
+				if fwo.Path != last.Path {
+					err = c.putFile2FullOrIncrQueue(last, false)
+					if err != nil {
+						return
 					}
+					c.wr.Store(fwo) // 用新文件覆盖掉旧文件记录
+				} else {
+					c.wr.Store(fwo) // 必须对同名记录做一次更新Event，否则会影响文件的mtime属性
 				}
 			}
 		}
@@ -684,7 +704,7 @@ func (c *CDPExecutor) startWalker() (err error) {
 		return
 	}
 
-	c.Walker = NewWalker(
+	c.walker = NewWalker(
 		c.config.Dir,
 		int(c.config.Depth),
 		int(c.config.Cores),
@@ -693,7 +713,7 @@ func (c *CDPExecutor) startWalker() (err error) {
 		*c.task.Start,
 		int(c.config.ValidDays))
 
-	c.WalkerQueue, err = c.Walker.Walk()
+	c.walkerQueue, err = c.walker.Walk()
 	if err != nil {
 		logger.Fmt.Errorf("%v.scanNotify Walk Error=%s", c.Str(), err.Error())
 		return
@@ -704,14 +724,14 @@ func (c *CDPExecutor) startWalker() (err error) {
 func (c *CDPExecutor) startWatcher() (err error) {
 	logger.Fmt.Infof("%v.startWatcher start watcher...", c.Str())
 
-	c.Watcher, err = nt_notify.NewWatcher(c.config.Dir, c.config.Recursion)
+	c.watcher, err = nt_notify.NewWatcher(c.config.Dir, c.config.Recursion)
 	if err != nil {
 		logger.Fmt.Errorf("%v.fsNotify NewWatcher Error=%s", c.Str(), err.Error())
 		return
 	}
 	logger.Fmt.Infof("%v.fsNotify init watcher(%v) is ok", c.Str(), c.config.Dir)
 
-	c.WatcherQueue, err = c.Watcher.Start()
+	c.watcherQueue, err = c.watcher.Start()
 	if err != nil {
 		logger.Fmt.Errorf("%v.fsNotify Start Error=%s", c.Str(), err.Error())
 		return
@@ -764,14 +784,14 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 		fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusError ||
 		fh.ID == 0 {
 		/*如何处理？？？
-		1. 若fh.Create >= c.StartTs, 则表示文件对象fh是在本次CDP启动之后才捕捉到的
+		1. 若fh.Create >= c.startTs, 则表示文件对象fh是在本次CDP启动之后才捕捉到的
 		   分支一： ERROR状态 ---> 处理
 		   分支二： 非ERROR状态且fh.timestamp与fwo.timestamp不相同 ---> 处理
 		   分支三： 非ERROR状态且fh.timestamp与fwo.timestamp相同 ---> 不处理
-		2. 若fh.Create < c.StartTs, 则表示文件对象fh是在本次CDP启动之前才捕捉到的
+		2. 若fh.Create < c.startTs, 则表示文件对象fh是在本次CDP启动之前才捕捉到的
 		   分支四： 处理
 		*/
-		if fh.ID != 0 && fh.Create >= c.StartTs && fh.Status != meta.FFStatusError && fh.Time == fwo.Time {
+		if fh.ID != 0 && fh.Create >= c.startTs && fh.Status != meta.FFStatusError && fh.Time == fwo.Time {
 			return
 		}
 	} else {
@@ -779,6 +799,14 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 			c.Str(), pretty.Sprint(fwo), pretty.Sprint(fh))
 		err = errors.New("invalid upload condition")
 	}
+
+	/*特殊情况说明：
+	某一个文件更改很频繁，在上一个文件还没有传输完毕的情况下，新的变更又被此服务捕捉到了
+
+	解决办法：
+	每次上传文件，均需要等待历史最近一次的同名文件上传完毕
+	否则，在等待期间，每来一个新的变更通知，便将前一个变更通知冲掉
+	*/
 
 	fm, err := c.notifyOneFileEvent(fwo)
 	if err != nil {
@@ -797,7 +825,7 @@ func (c *CDPExecutor) isValidPath(path string, mtime int64) bool {
 	if c.config.Depth != -1 && int64(strings.Count(filepath.Dir(path), meta.Sep)) > c.config.Depth {
 		return false
 	}
-	if !c.Grep.IsValidByGrep(path) {
+	if !c.grep.IsValidByGrep(path) {
 		return false
 	}
 	if c.config.ValidDays != -1 && mtime+24*60*60*c.config.ValidDays > c.task.Start.Unix() {
@@ -846,12 +874,12 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 	switch c.targetType {
 	case TTHost:
 		ff.Storage = filepath.Join(
-			c.StorageHost.TargetConfHost.RemotePath,
+			c.storageHost.TargetConfHost.RemotePath,
 			strconv.FormatInt(c.config.ID, 0xa),
 			strings.Replace(ff.Parent, c.config.Dir, "", 1),
 			ff.Name,
 		)
-		ff.Storage = tools.CorrectPathWithPlatform(ff.Storage, tools.IsWin(c.Target.Type))
+		ff.Storage = tools.CorrectPathWithPlatform(ff.Storage, tools.IsWin(c.target.Type))
 	case TTS3:
 		ff.Storage = tools.GenerateS3Key(ff.Path, c.config.ID)
 	}
@@ -870,26 +898,25 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 			t   int64
 			ok  bool
 		)
-		defer c.stopExecutorByError(err)
 
 		for {
+			if c.isStopped() {
+				logger.Fmt.Infof("%v.putFileEventWhenTimeout【终止】", c.Str())
+				return
+			}
 			time.Sleep(5 * time.Second)
-			if fwo, t, ok = rd.Load(); !ok {
+			if fwo, t, ok = c.wr.Load(); !ok {
 				continue
 			}
 
 			if time.Now().Unix()-t > 5 {
 				if err = c.putFile2FullOrIncrQueue(fwo, false); err != nil {
+					logger.Fmt.Errorf("%v.putFileEventWhenTimeout putFile2FullOrIncrQueue ERR=%v",
+						c.Str(), err)
 					return
 				}
-				rd.Del()
+				c.wr.Del()
 			}
 		}
 	}()
-}
-
-func (c *CDPExecutor) stopExecutorByError(err error) {
-	if err != nil {
-		c.cancel()
-	}
 }

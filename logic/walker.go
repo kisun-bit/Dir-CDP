@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Walker 实现了路径迭代器(比filepath.walk性能更好)
+// walker 实现了路径迭代器(比filepath.walk性能更好)
 type Walker struct {
 	Root        string
 	Depth       int
@@ -25,6 +26,8 @@ type Walker struct {
 	semaphore   chan struct{}
 	wg          sync.WaitGroup
 	pipe        chan nt_notify.FileWatchingObj
+	stopNotify  *int32
+	stopOnce    *sync.Once
 }
 
 func NewWalker(
@@ -37,13 +40,25 @@ func NewWalker(
 	w.Grep = *NewGrep(Include, Exclude)
 	w.CurrentTime = now
 	w.ValidDays = validDays
+	w.stopNotify = new(int32)
+	w.stopOnce = new(sync.Once)
 
 	logger.Fmt.Infof("NewWalker -> %v", w.String())
 	return w
 }
 
+func (w *Walker) isStopped() bool {
+	return atomic.LoadInt32(w.stopNotify) == 1
+}
+
+func (w *Walker) setStop() {
+	w.stopOnce.Do(func() {
+		atomic.StoreInt32(w.stopNotify, 1)
+	})
+}
+
 func (w *Walker) Walk() (pq chan nt_notify.FileWatchingObj, err error) {
-	logger.Info("Walker Walk. start")
+	logger.Info("walker Walk. start")
 
 	w.wg.Add(1)
 	go w.walkDir(w.Root)
@@ -51,26 +66,30 @@ func (w *Walker) Walk() (pq chan nt_notify.FileWatchingObj, err error) {
 	go func() {
 		w.wg.Wait()
 		close(w.pipe) // 关闭通道不会影响从通道读数据
-		logger.Info("Walker Walk. finished")
+		logger.Info("walker Walk. finished")
 	}()
 	return w.pipe, nil
 }
 
 func (w *Walker) walkDir(dir string) {
 	defer w.wg.Done()
+	if w.isStopped() {
+		//logger.Fmt.Warnf("walker walkDir 终止")
+		return
+	}
 	if w.Depth != -1 && strings.Count(dir, meta.Sep) > w.Depth {
-		logger.Fmt.Warnf("Walker walkDir. limit depth %d. ignore to walk %s", w.Depth, dir)
+		logger.Fmt.Warnf("walker walkDir. limit depth %d. ignore to walk %s", w.Depth, dir)
 		return
 	}
 	for _, entry := range w.dirListObjs(dir) {
 		path_, err := filepath.Abs(path.Join(dir, entry.Name()))
 		if err != nil {
-			logger.Fmt.Errorf("Walker walkDir. failed to get abs-path from %s", path_)
+			logger.Fmt.Errorf("walker walkDir. failed to get abs-path from %s", path_)
 			continue
 		}
 		// ignore link file
 		if entry.Mode()&os.ModeSymlink != 0 {
-			logger.Fmt.Info("Walker walkDir. ignore to backup link file ", path_)
+			logger.Fmt.Info("walker walkDir. ignore to backup link file ", path_)
 			continue
 		}
 		if entry.IsDir() {
@@ -80,7 +99,7 @@ func (w *Walker) walkDir(dir string) {
 			if w.Grep.IsValidByGrep(path_) {
 				if w.ValidDays != -1 {
 					if entry.ModTime().Add(time.Hour * 24 * time.Duration(w.ValidDays)).Before(w.CurrentTime) {
-						logger.Fmt.Warnf("Walker walkDir. ignore to backup `%s` due to modify time", path_)
+						logger.Fmt.Warnf("walker walkDir. ignore to backup `%s` due to modify time", path_)
 						continue
 					}
 				}
@@ -112,7 +131,7 @@ func (w *Walker) dirListObjs(dir string) []os.FileInfo {
 }
 
 func (w *Walker) String() string {
-	return fmt.Sprintf("<Walker: Root(%s) Depth(%d) Threads(%d) Include(%v) Exclude(%v)>",
+	return fmt.Sprintf("<walker: Root(%s) Depth(%d) Threads(%d) Include(%v) Exclude(%v)>",
 		w.Root,
 		w.Depth,
 		w.ThreadSize,

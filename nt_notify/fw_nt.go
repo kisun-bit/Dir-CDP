@@ -4,6 +4,8 @@ import (
 	"jingrongshuan/rongan-fnotify/tools"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -20,6 +22,8 @@ type Win32Watcher struct {
 	recursive      bool
 	buffer         []byte
 	notify         chan FileWatchingObj
+	stopNotify     *int32
+	stopOnce       *sync.Once
 }
 
 func NewWatcher(Dir string, IsRecursive bool) (w *Win32Watcher, err error) {
@@ -32,7 +36,19 @@ func NewWatcher(Dir string, IsRecursive bool) (w *Win32Watcher, err error) {
 	w.recursive = IsRecursive
 	w.buffer = make([]byte, WatchingBufferSize)
 	w.notify = make(chan FileWatchingObj, WatchingQueueSize)
+	w.stopNotify = new(int32)
+	w.stopOnce = new(sync.Once)
 	return w, err
+}
+
+func (w *Win32Watcher) isStopped() bool {
+	return atomic.LoadInt32(w.stopNotify) == 1
+}
+
+func (w *Win32Watcher) SetStop() {
+	w.stopOnce.Do(func() {
+		atomic.StoreInt32(w.stopNotify, 1)
+	})
 }
 
 func (w *Win32Watcher) Start() (_ chan FileWatchingObj, err error) {
@@ -71,6 +87,10 @@ func (w *Win32Watcher) asyncLoop() (err error) {
 		defer close(w.notify)
 
 		for {
+			if w.isStopped() {
+				//logging.Logger.Fmt.Warnf("Win32Watcher.asyncLoop 终止")
+				return
+			}
 			if err = w.readDirectoryChanges(); err != nil {
 				break
 			}
@@ -96,6 +116,10 @@ func (w *Win32Watcher) readDirectoryChanges() (err error) {
 func (w *Win32Watcher) collectChangeInfo() {
 	var offset uint32
 	for {
+		if w.isStopped() {
+			return
+		}
+
 		raw := (*syscall.FileNotifyInformation)(unsafe.Pointer(&w.buffer[offset]))
 		buf := (*[syscall.MAX_PATH]uint16)(unsafe.Pointer(&raw.FileName))
 		name := syscall.UTF16ToString(buf[:raw.FileNameLength/2])

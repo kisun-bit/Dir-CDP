@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"gorm.io/gorm"
+	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/nt_notify"
 	"path/filepath"
 	"strings"
@@ -125,8 +126,9 @@ func DeleteFileFlowByConfID(db *gorm.DB, conf int64) (err error) {
 	return nil
 }
 
-func DeleteAllFilesByConf(db *gorm.DB, conf int64) (err error) {
-	sql_ := fmt.Sprintf(`DELETE FROM %v WHERE conf_id=%v`, _table(conf), conf)
+func DeleteNotUploadFileFlows(db *gorm.DB, conf int64) (err error) {
+	sql_ := fmt.Sprintf(`DELETE FROM %v WHERE conf_id=%v AND status != '%v'`,
+		_table(conf), conf, meta.FFStatusFinished)
 	return db.Exec(sql_).Error
 }
 

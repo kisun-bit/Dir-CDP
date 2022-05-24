@@ -25,7 +25,7 @@ func StartHTTPService() (err error) {
 	}
 	logging.Logger.Fmt.Infof("[info] start http server listening %s", endpoint)
 	if err = server.ListenAndServe(); err != nil {
-		logging.Logger.Fmt.Error("[Error] Server err: ", err)
+		logging.Logger.Fmt.Error("[Error] server err: ", err)
 	}
 	return
 }

@@ -7,7 +7,7 @@ import (
 
 const SEQ = "@jrsa@"
 
-// Grep 实现基于文件路径的黑白名单过滤
+// grep 实现基于文件路径的黑白名单过滤
 type Grep struct {
 	Include []string
 	Exclude []string
