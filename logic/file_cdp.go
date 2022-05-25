@@ -62,35 +62,35 @@ const (
 // CDPExecutor也能在捕捉变更文件时，忽略掉恢复文件
 // TODO 使用“文件锁”针对目录实现并发互斥
 type CDPExecutor struct {
-	config    *models.ConfigModel
-	dp        *models.DBProxy
-	task      *models.BackupTaskModel
-	incrQueue chan models.FileFlowModel // 增量数据通道，该通道永久开放
-	fullQueue chan models.FileFlowModel // 全量数据通道，该通道在全量备份完成后关闭
-	fullWG    *sync.WaitGroup
-	incrWG    *sync.WaitGroup
-	fullPool  *ants.Pool
-	incrPool  *ants.Pool
 	//ctx          context.Context
 	//cancel       context.CancelFunc // 取消事件
-	isReload     bool // 当服务重启时，此属性为True
-	targetType   TargetType
-	server       models.ClientInfo // 备份服务器信息
-	origin       models.ClientInfo // 备份源机信息
-	target       models.ClientInfo // 备份目标机
-	storageHost  models.TargetHost // 备份目标机存储信息
-	storageS3    models.TargetS3   // 备份目标对象存储信息
-	hostSession  string
-	grep         *Grep
-	s3Session    *session.Session
-	s3Client     gos3.S3Client
-	watcher      *nt_notify.Win32Watcher
-	watcherQueue chan nt_notify.FileWatchingObj
-	walker       *Walker
-	walkerQueue  chan nt_notify.FileWatchingObj
-	startTs      int64
-	stopNotify   *int32    // 用户禁用/取消信号、异常终止信号
-	wr           *Recorder // 用于对装载变更事件的通道WatcherQueue做相邻去重处理
+	config          *models.ConfigModel
+	dp              *models.DBProxy
+	task            *models.BackupTaskModel
+	incrQueue       chan models.FileFlowModel // 增量数据通道，该通道永久开放
+	fullQueue       chan models.FileFlowModel // 全量数据通道，该通道在全量备份完成后关闭
+	fullWG          *sync.WaitGroup
+	incrWG          *sync.WaitGroup
+	fullPool        *ants.Pool
+	incrPool        *ants.Pool
+	isReload        bool // 当服务重启时，此属性为True
+	targetType      TargetType
+	server          models.ClientInfo // 备份服务器信息
+	origin          models.ClientInfo // 备份源机信息
+	target          models.ClientInfo // 备份目标机
+	storageHost     models.TargetHost // 备份目标机存储信息
+	storageS3       models.TargetS3   // 备份目标对象存储信息
+	hostSession     string
+	grep            *Grep
+	s3Session       *session.Session
+	s3Client        gos3.S3Client
+	watcher         *nt_notify.Win32Watcher
+	watcherQueue    chan nt_notify.FileWatchingObj
+	walker          *Walker
+	walkerQueue     chan nt_notify.FileWatchingObj
+	startTs         int64
+	stopNotify      *int32    // 用户禁用/取消信号、异常终止信号
+	lastEventPusher *Recorder // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
 }
 
 func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
@@ -105,8 +105,8 @@ func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExec
 	//ce.ctx, ce.cancel = context.WithCancel(context.Background())
 
 	ce.stopNotify = new(int32)
-	ce.wr = new(Recorder)
-	ce.wr.m = new(sync.Map)
+	ce.lastEventPusher = new(Recorder)
+	ce.lastEventPusher.m = new(sync.Map)
 	ce.startTs = time.Now().Unix()
 	logger.Fmt.Infof("init CDPExecutor is ok")
 	return
@@ -465,11 +465,6 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 
 func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.FileFlowModel, wg *sync.WaitGroup) (err error) {
 	return pool.Submit(func() {
-		var (
-			err  error
-			last models.FileFlowModel
-		)
-
 		defer wg.Done()
 
 		/* 存在同名文件的上传逻辑
@@ -482,16 +477,6 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.FileFlowModel, w
 		未找到：
 		   直接上传
 		*/
-		last, err = models.QueryLastSameNameFileExcludeSelf(c.dp.DB, c.config.ID, fwo.Path)
-		if err != nil {
-			logger.Fmt.Errorf("%v.uploadOneFile QueryLastSameNameFile ERR=%v", c.Str(), err)
-			return
-		}
-		if last.ID != 0 && (last.Status == meta.FFStatusSyncing || last.Status == meta.FFStatusWatched) {
-			logger.Fmt.Debugf("%v.uploadOneFile waiting last(%v) syncing until finished", c.Str(), last.ID)
-			// TODO 是返回还是阻塞等待历史文件传输完毕呢？
-			return
-		}
 		if !models.IsEnable(c.dp.DB, c.config.ID) {
 			logger.Fmt.Warnf("%v.uploadOneFile【终止】", c.Str())
 			return
@@ -574,7 +559,7 @@ func (c *CDPExecutor) upload2s3(ffm models.FileFlowModel, fp io.Reader) (err err
 		Body:   fp,
 	})
 	if err != nil {
-		logger.Fmt.Errorf("%v.upload2s3 Unable to upload file %s | %v", c.Str(), ffm.Path, err)
+		logger.Fmt.Warnf("%v.upload2s3 Unable to upload file %s | %v", c.Str(), ffm.Path, err)
 	}
 	return
 }
@@ -676,9 +661,9 @@ func (c *CDPExecutor) fsNotify() {
 		case meta.Win32EventRenameTo:
 			fallthrough
 		case meta.Win32EventUpdate:
-			if last, _, ok := c.wr.Load(); !ok {
+			if last, _, ok := c.lastEventPusher.Load(); !ok {
 				last = fwo
-				c.wr.Store(fwo)
+				c.lastEventPusher.Store(fwo)
 				break
 			} else {
 				// 捕捉到新的不同名文件的变更记录
@@ -687,9 +672,9 @@ func (c *CDPExecutor) fsNotify() {
 					if err != nil {
 						return
 					}
-					c.wr.Store(fwo) // 用新文件覆盖掉旧文件记录
+					c.lastEventPusher.Store(fwo) // 用新文件覆盖掉旧文件记录
 				} else {
-					c.wr.Store(fwo) // 必须对同名记录做一次更新Event，否则会影响文件的mtime属性
+					c.lastEventPusher.Store(fwo) // 更新Event
 				}
 			}
 		}
@@ -805,9 +790,22 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 
 	解决办法：
 	每次上传文件，均需要等待历史最近一次的同名文件上传完毕
-	否则，在等待期间，每来一个新的变更通知，便将前一个变更通知冲掉
 	*/
+	if fh.ID != 0 && (fh.Status == meta.FFStatusSyncing || fh.Status == meta.FFStatusWatched) {
+		fi, err_ := os.Stat(fwo.Path)
+		if err_ != nil {
+			return nil
+		}
+		// 说明新的变更事件已经产生，且已存在于c.watcherQueue中，所以忽略本次事件
+		if fi.ModTime().Unix() > fwo.Time {
+			logger.Fmt.Debugf("忽略%v", fwo.Path)
+			return nil
+		}
+		logger.Fmt.Debugf("回溯%v", fwo.Path)
+		c.watcherQueue <- fwo
+	}
 
+	// 记录事件至DB和Queue
 	fm, err := c.notifyOneFileEvent(fwo)
 	if err != nil {
 		logger.Fmt.Errorf("%v.fsNotify notifyOneFileEvent Error=%s", c.Str(), err.Error())
@@ -905,7 +903,7 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 				return
 			}
 			time.Sleep(5 * time.Second)
-			if fwo, t, ok = c.wr.Load(); !ok {
+			if fwo, t, ok = c.lastEventPusher.Load(); !ok {
 				continue
 			}
 
@@ -915,7 +913,7 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 						c.Str(), err)
 					return
 				}
-				c.wr.Del()
+				c.lastEventPusher.Del()
 			}
 		}
 	}()
