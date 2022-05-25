@@ -67,8 +67,8 @@ type CDPExecutor struct {
 	config          *models.ConfigModel
 	dp              *models.DBProxy
 	task            *models.BackupTaskModel
-	incrQueue       chan models.FileFlowModel // 增量数据通道，该通道永久开放
-	fullQueue       chan models.FileFlowModel // 全量数据通道，该通道在全量备份完成后关闭
+	incrQueue       chan models.EventFileModel // 增量数据通道，该通道永久开放
+	fullQueue       chan models.EventFileModel // 全量数据通道，该通道在全量备份完成后关闭
 	fullWG          *sync.WaitGroup
 	incrWG          *sync.WaitGroup
 	fullPool        *ants.Pool
@@ -98,8 +98,8 @@ func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExec
 	ce.config = config
 	ce.dp = dp
 
-	ce.incrQueue = make(chan models.FileFlowModel, meta.BackupChanSize)
-	ce.fullQueue = make(chan models.FileFlowModel, meta.BackupChanSize)
+	ce.incrQueue = make(chan models.EventFileModel, meta.BackupChanSize)
+	ce.fullQueue = make(chan models.EventFileModel, meta.BackupChanSize)
 	ce.fullWG = &sync.WaitGroup{}
 	ce.incrWG = &sync.WaitGroup{}
 	//ce.ctx, ce.cancel = context.WithCancel(context.Background())
@@ -186,8 +186,12 @@ func (c *CDPExecutor) Start() (err error) {
 			return
 		}
 	}
-	if err = c.dp.RegisterTable(c.config.ID); err != nil {
-		logger.Fmt.Errorf("%v.Start RegisterTable ERR=%v", c.Str(), err)
+	if err = c.dp.RegisterEventFileModel(c.config.ID); err != nil {
+		logger.Fmt.Errorf("%v.Start RegisterEventFileModel ERR=%v", c.Str(), err)
+		return
+	}
+	if err = c.dp.RegisterEventDirModel(c.config.ID); err != nil {
+		logger.Fmt.Errorf("%v.Start RegisterEventDirModel ERR=%v", c.Str(), err)
 		return
 	}
 
@@ -209,11 +213,18 @@ func (c *CDPExecutor) monitorStopNotify() {
 			if models.IsEnable(c.dp.DB, c.config.ID) {
 				continue
 			}
-			atomic.StoreInt32(c.stopNotify, 1)
+			c.stop()
 			ticker.Stop()
 			logger.Fmt.Infof("%v.monitorStopNotify【终止】", c.Str())
 		}
 	}
+}
+
+func (c *CDPExecutor) stop() {
+	if c.isStopped() {
+		return
+	}
+	atomic.StoreInt32(c.stopNotify, 1)
 }
 
 func (c *CDPExecutor) logic() {
@@ -427,6 +438,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		queue = c.incrQueue
 		pool  = c.incrPool
 	)
+	defer c.stopExecutorWhenErr(err)
 
 	if full {
 		queue = c.fullQueue
@@ -463,7 +475,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 	logger.Fmt.Infof("%v.uploadDispatcher exit，task(%v) 进入【CDPING】状态", c.Str(), c.task.ID)
 }
 
-func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.FileFlowModel, wg *sync.WaitGroup) (err error) {
+func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, wg *sync.WaitGroup) (err error) {
 	return pool.Submit(func() {
 		defer wg.Done()
 
@@ -493,7 +505,7 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.FileFlowModel, w
 	})
 }
 
-func (c *CDPExecutor) upload2DiffStorage(ffm models.FileFlowModel) (err error) {
+func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) {
 	defer func() {
 		if err == nil {
 			if err = models.UpdateFileFlowStatus(
@@ -525,7 +537,7 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.FileFlowModel) (err error) {
 	}
 }
 
-func (c *CDPExecutor) upload2host(ffm models.FileFlowModel, fp io.Reader) (err error) {
+func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, _ := writer.CreateFormFile("filename", filepath.Join(ffm.Parent, ffm.Name+ffm.Tag))
@@ -545,7 +557,7 @@ func (c *CDPExecutor) upload2host(ffm models.FileFlowModel, fp io.Reader) (err e
 	return nil
 }
 
-func (c *CDPExecutor) upload2s3(ffm models.FileFlowModel, fp io.Reader) (err error) {
+func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err error) {
 	uploader := s3manager.NewUploader(
 		c.s3Session,
 		func(u *s3manager.Uploader) {
@@ -578,6 +590,7 @@ func (c *CDPExecutor) incr() {
 
 func (c *CDPExecutor) scanNotify() {
 	var err error
+	defer c.stopExecutorWhenErr(err)
 	defer close(c.fullQueue)
 
 	if err = c.startWalker(); err != nil {
@@ -628,6 +641,8 @@ func (r *Recorder) Load() (nt_notify.FileWatchingObj, int64, bool) {
 
 func (c *CDPExecutor) fsNotify() {
 	var err error
+	defer c.stopExecutorWhenErr(err)
+
 	if err = c.startWatcher(); err != nil {
 		return
 	}
@@ -806,6 +821,10 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 	}
 
 	// 记录事件至DB和Queue
+	if err = models.CreateDirIfNotExists(c.dp.DB, c.config.ID, filepath.Dir(fwo.Path), ""); err != nil {
+		logger.Fmt.Errorf("%v.fsNotify CreateDirIfNotExists Error=%s", c.Str(), err.Error())
+		return
+	}
 	fm, err := c.notifyOneFileEvent(fwo)
 	if err != nil {
 		logger.Fmt.Errorf("%v.fsNotify notifyOneFileEvent Error=%s", c.Str(), err.Error())
@@ -848,8 +867,8 @@ func (c *CDPExecutor) initTaskOnce() (err error) {
 	return models.CreateBackupTaskModel(c.dp.DB, c.task)
 }
 
-func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models.FileFlowModel, err error) {
-	ff := new(models.FileFlowModel)
+func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models.EventFileModel, err error) {
+	ff := new(models.EventFileModel)
 	ff.Event = meta.EventCode[e.Event]
 	ff.Create = time.Now().Unix()
 	ff.ConfID = c.config.ID
@@ -896,6 +915,7 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 			t   int64
 			ok  bool
 		)
+		defer c.stopExecutorWhenErr(err)
 
 		for {
 			if c.isStopped() {
@@ -917,4 +937,11 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 			}
 		}
 	}()
+}
+
+func (c *CDPExecutor) stopExecutorWhenErr(err error) {
+	if err != nil {
+		logger.Fmt.Errorf("%v.stopExecutorWhenErr ERR=%v", c.Str(), err)
+		c.stop()
+	}
 }

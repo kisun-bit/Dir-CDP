@@ -23,14 +23,14 @@ type RestoreTask struct {
 	task       *models.RestoreTaskModel
 	dp         *models.DBProxy
 	filterArgs models.RestoreFilter
-	queue      chan models.FileFlowModel
+	queue      chan models.EventFileModel
 }
 
 func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *RestoreTask, err error) {
 	r = new(RestoreTask)
 	r.dp = dp
 	r.task = task
-	r.queue = make(chan models.FileFlowModel, 100)
+	r.queue = make(chan models.EventFileModel, 100)
 	return r, nil
 }
 
@@ -97,7 +97,7 @@ func (r *RestoreTask) restoreOneSet(path_ string) (err error) {
 	var (
 		dir bool
 		row *sql.Rows
-		ffm models.FileFlowModel
+		ffm models.EventFileModel
 	)
 
 	dir = strings.HasSuffix(path_, meta.Sep)
@@ -128,7 +128,7 @@ func (r *RestoreTask) restoreOneSet(path_ string) (err error) {
 func (r *RestoreTask) restoreByTime() (err error) {
 	var (
 		row *sql.Rows
-		ffm models.FileFlowModel
+		ffm models.EventFileModel
 	)
 
 	if row, err = models.QueryFileIteratorByTime(
@@ -231,7 +231,7 @@ func (r *RestoreTask) download() {
 }
 
 func (r *RestoreTask) _downloadFromS3(
-	ffm models.FileFlowModel, local *os.File, downloader *s3manager.Downloader, bucket string) (err error) {
+	ffm models.EventFileModel, local *os.File, downloader *s3manager.Downloader, bucket string) (err error) {
 	defer local.Close()
 
 	_, err = downloader.Download(local,
@@ -243,7 +243,7 @@ func (r *RestoreTask) _downloadFromS3(
 }
 
 func (r *RestoreTask) _downloadFromHost(
-	ffm models.FileFlowModel, local *os.File, url string) (err error) {
+	ffm models.EventFileModel, local *os.File, url string) (err error) {
 	defer local.Close()
 
 	url += base64.StdEncoding.EncodeToString([]byte(ffm.Storage))

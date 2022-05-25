@@ -69,7 +69,7 @@ func (fvb *DBProxy) initSchema() (err error) {
 	return fvb.DB.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", ModelDefaultSchema)).Error
 }
 
-// sharding 实现分表功能，每启用一个监控同步配置，便会新生成一个表
+// sharding 实现分表功能，每启用一个监控同步配置，便会新生成一个File表和一个Dir表
 func (fvb *DBProxy) sharding() (err error) {
 	cos, err := fvb.queryConfigObjects()
 	if err != nil {
@@ -77,7 +77,10 @@ func (fvb *DBProxy) sharding() (err error) {
 		return
 	}
 	for _, c := range cos {
-		if err = fvb.RegisterTable(c.ID); err != nil {
+		if err = fvb.RegisterEventFileModel(c.ID); err != nil {
+			return
+		}
+		if err = fvb.RegisterEventDirModel(c.ID); err != nil {
 			return
 		}
 	}
@@ -85,7 +88,7 @@ func (fvb *DBProxy) sharding() (err error) {
 	//	ShardingKey:         "conf_id",
 	//	NumberOfShards:      2147483647,
 	//	PrimaryKeyGenerator: sharding.PKSnowflake,
-	//}, "file_flow")
+	//}, "event_file")
 	//if err = fvb.DB.Use(middleware); err != nil {
 	//	logger.Fmt.Errorf("DBProxy.sharding use sharding-middleware err=%v", err)
 	//	return
@@ -93,19 +96,37 @@ func (fvb *DBProxy) sharding() (err error) {
 	return
 }
 
-func (fvb *DBProxy) RegisterTable(conf int64) (err error) {
+func (fvb *DBProxy) RegisterEventFileModel(conf int64) (err error) {
 	defer func() {
 		if err != nil {
 			if err_ := DeleteFileFlowByConfID(fvb.DB, conf); err_ != nil {
-				logger.Fmt.Errorf("DBProxy.RegisterTable err=%v", err_)
+				logger.Fmt.Errorf("DBProxy.RegisterEventFileModel err=%v", err_)
 			}
 		}
 	}()
 
-	table := "file_flow" + "_" + strconv.FormatInt(conf, 10)
-	sql := strings.ReplaceAll(FileFlowCreateDDL, "file_flow", table)
+	table := "event_file" + "_" + strconv.FormatInt(conf, 10)
+	sql := strings.ReplaceAll(FileFlowCreateDDL, "event_file", table)
 	if r := fvb.DB.Exec(sql); r.Error != nil {
-		logger.Fmt.Errorf("DBProxy.sharding failed to exec `%s` err=%v", sql, r.Error)
+		logger.Fmt.Errorf("DBProxy.RegisterEventFileModel failed to exec `%s` err=%v", sql, r.Error)
+		return r.Error
+	}
+	return nil
+}
+
+func (fvb *DBProxy) RegisterEventDirModel(conf int64) (err error) {
+	defer func() {
+		if err != nil {
+			if err_ := DeleteDirByConfID(fvb.DB, conf); err_ != nil {
+				logger.Fmt.Errorf("DBProxy.RegisterEventDirModel err=%v", err_)
+			}
+		}
+	}()
+
+	table := "event_dir" + "_" + strconv.FormatInt(conf, 10)
+	sql := strings.ReplaceAll(DirCreateDDL, "event_dir", table)
+	if r := fvb.DB.Exec(sql); r.Error != nil {
+		logger.Fmt.Errorf("DBProxy.RegisterEventDirModel failed to exec `%s` err=%v", sql, r.Error)
 		return r.Error
 	}
 	return nil
