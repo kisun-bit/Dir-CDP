@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,10 +25,10 @@ type Walker struct {
 	ValidDays   int
 	Grep        Grep
 	semaphore   chan struct{}
-	wg          sync.WaitGroup
+	wg          *sync.WaitGroup
 	pipe        chan nt_notify.FileWatchingObj
 	stopNotify  *int32
-	stopOnce    *sync.Once
+	pipClosed   *int32
 }
 
 func NewWalker(
@@ -35,14 +36,14 @@ func NewWalker(
 	w := new(Walker)
 
 	w.Root, w.Depth, w.ThreadSize = root, maxDepth, maxThreadsNum
-	w.pipe = make(chan nt_notify.FileWatchingObj, 100)
+	w.pipe = make(chan nt_notify.FileWatchingObj, 10)
 	w.semaphore = make(chan struct{}, w.ThreadSize)
 	w.Grep = *NewGrep(Include, Exclude)
 	w.CurrentTime = now
 	w.ValidDays = validDays
 	w.stopNotify = new(int32)
-	w.stopOnce = new(sync.Once)
-
+	w.pipClosed = new(int32)
+	w.wg = new(sync.WaitGroup)
 	logger.Fmt.Infof("NewWalker -> %v", w.String())
 	return w
 }
@@ -51,10 +52,32 @@ func (w *Walker) isStopped() bool {
 	return atomic.LoadInt32(w.stopNotify) == 1
 }
 
-func (w *Walker) setStop() {
-	w.stopOnce.Do(func() {
-		atomic.StoreInt32(w.stopNotify, 1)
-	})
+func (w *Walker) SetStop() {
+	defer func() {
+		if e := recover(); e != nil {
+			logger.Fmt.Warnf("%v.SetStop PANIC=%v", w.String(), e)
+		}
+	}()
+	if w.isStopped() {
+		logger.Fmt.Infof("%v.SetStop 已禁用路径枚举器", w.String())
+		return
+	}
+	logger.Fmt.Infof("%v.SetStop 正在关闭路径枚举器...", w.String())
+	atomic.StoreInt32(w.stopNotify, 1)
+	for {
+		defer func() {
+			defer func() {
+				if e := recover(); e != nil {
+					atomic.StoreInt32(w.pipClosed, 1)
+					//logger.Fmt.Warnf("%v.SetStop For PANIC=%v", w.String(), e)
+				}
+			}()
+		}()
+		if atomic.LoadInt32(w.pipClosed) == 1 {
+			break
+		}
+		w.wg.Done()
+	}
 }
 
 func (w *Walker) Walk() (pq chan nt_notify.FileWatchingObj, err error) {
@@ -64,24 +87,43 @@ func (w *Walker) Walk() (pq chan nt_notify.FileWatchingObj, err error) {
 	go w.walkDir(w.Root)
 
 	go func() {
+		defer func() {
+			if e := recover(); e != nil {
+				logger.Fmt.Warnf("%v.Walk PANIC=%v", w.String(), e)
+			}
+			close(w.pipe) // 关闭通道不会影响从通道读数据
+			atomic.StoreInt32(w.pipClosed, 1)
+			logger.Fmt.Infof("%v.Walk 已关闭路径枚举器的枚举通道...", w.String())
+		}()
 		w.wg.Wait()
-		close(w.pipe) // 关闭通道不会影响从通道读数据
-		logger.Info("walker Walk. finished")
 	}()
 	return w.pipe, nil
 }
 
 func (w *Walker) walkDir(dir string) {
+	defer func() {
+		if e := recover(); e != nil {
+			//logger.Fmt.Warnf("%v.walkDir recover PANIC=%v. will exit current goroutine", w.String(), e)
+			runtime.Goexit()
+		}
+	}()
 	defer w.wg.Done()
+
 	if w.isStopped() {
-		//logger.Fmt.Warnf("walker walkDir 终止")
+		logger.Fmt.Info("%v.walkDir【终止】", w.String())
 		return
 	}
+
 	if w.Depth != -1 && strings.Count(dir, meta.Sep) > w.Depth {
 		logger.Fmt.Warnf("walker walkDir. limit depth %d. ignore to walk %s", w.Depth, dir)
 		return
 	}
+
 	for _, entry := range w.dirListObjs(dir) {
+		if w.isStopped() {
+			logger.Fmt.Info("%v.walkDir【终止】", w.String())
+			return
+		}
 		path_, err := filepath.Abs(path.Join(dir, entry.Name()))
 		if err != nil {
 			logger.Fmt.Errorf("walker walkDir. failed to get abs-path from %s", path_)

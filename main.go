@@ -23,9 +23,9 @@ func StartHTTPService() (err error) {
 		WriteTimeout:   meta.AppWriteTimeout,
 		MaxHeaderBytes: 1 << 20,
 	}
-	logging.Logger.Fmt.Infof("[info] start http server listening %s", endpoint)
+	logging.Logger.Fmt.Infof("start rongan-fnotify service listening %s", endpoint)
 	if err = server.ListenAndServe(); err != nil {
-		logging.Logger.Fmt.Error("[Error] server err: ", err)
+		logging.Logger.Fmt.Error("failed to start rongan-fnotify service err: ", err)
 	}
 	return
 }

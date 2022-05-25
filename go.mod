@@ -4,11 +4,12 @@ go 1.15
 
 require (
 	github.com/astaxie/beego v1.12.3
+	github.com/boltdb/bolt v1.3.1
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
 	github.com/gin-gonic/gin v1.7.7
 	github.com/go-openapi/spec v0.20.6 // indirect
 	github.com/go-openapi/swag v0.21.1 // indirect
-	github.com/go-ping/ping v1.0.0
+	github.com/go-ping/ping v1.0.0 // indirect
 	github.com/go-playground/validator/v10 v10.11.0 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/journeymidnight/aws-sdk-go v1.18.2

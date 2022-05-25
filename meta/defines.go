@@ -74,3 +74,6 @@ const SplitFlag = "@jrsa@"
 
 // 备份服务器IP地址信息（可能存在多个）
 const ServerIPsWin = `C:\rongan\server.ips`
+
+// 备份过程出错，记录错误上下文的文件
+const ServerCtxWin = `C:\rongan\server_ctx.db`

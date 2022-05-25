@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// 文件恢复标记
-const RestoreSuffix = "RESTORE(a4b4f7ec-8768-4261-8aaa-eeca85766096)"
+// 忽略带有标记
+const IgnoreFlag = "IGNORE_a4b4f7ec876842618aaaeeca85766096"
 
 // 系统平台
 var IsWin = runtime.GOOS == "windows"

@@ -138,14 +138,14 @@ func QueryTargetConfHostByConf(db *gorm.DB, conf int64) (tch TargetHost, err err
 	return
 }
 
-func IsEnable(db *gorm.DB, confID int64) bool {
+func IsEnable(db *gorm.DB, confID int64) (_ bool, err error) {
 	var c ConfigModel
 	r := db.Model(&ConfigModel{}).Where("id = ?", confID).Take(&c)
 	if r.Error != nil {
-		logger.Fmt.Warnf("IsEnable err=%v", r.Error)
-		return false
+		//logger.Fmt.Warnf("IsEnable err=%v", r.Error)
+		return false, r.Error
 	}
-	return c.Enable
+	return c.Enable, r.Error
 }
 
 func QueryConfig(db *gorm.DB, conf int64) (c ConfigModel, err error) {

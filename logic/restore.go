@@ -201,7 +201,7 @@ func (r *RestoreTask) download() {
 			continue
 		}
 
-		local := strings.Replace(ffm.Path, config.Dir, r.filterArgs.RestoreDir, 1) + meta.RestoreSuffix
+		local := strings.Replace(ffm.Path, config.Dir, r.filterArgs.RestoreDir, 1) + meta.IgnoreFlag
 		target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
 		if err != nil {
 			logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
@@ -224,7 +224,7 @@ func (r *RestoreTask) download() {
 			}
 		}
 
-		if err = os.Rename(local, strings.TrimSuffix(local, meta.RestoreSuffix)); err != nil {
+		if err = os.Rename(local, strings.TrimSuffix(local, meta.IgnoreFlag)); err != nil {
 			return
 		}
 	}

@@ -1,6 +1,10 @@
 package nt_notify
 
 import (
+	"fmt"
+	"io/ioutil"
+	"jingrongshuan/rongan-fnotify/logging"
+	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/tools"
 	"os"
 	"path/filepath"
@@ -23,7 +27,7 @@ type Win32Watcher struct {
 	buffer         []byte
 	notify         chan FileWatchingObj
 	stopNotify     *int32
-	stopOnce       *sync.Once
+	closeOnce      *sync.Once
 }
 
 func NewWatcher(Dir string, IsRecursive bool) (w *Win32Watcher, err error) {
@@ -37,7 +41,7 @@ func NewWatcher(Dir string, IsRecursive bool) (w *Win32Watcher, err error) {
 	w.buffer = make([]byte, WatchingBufferSize)
 	w.notify = make(chan FileWatchingObj, WatchingQueueSize)
 	w.stopNotify = new(int32)
-	w.stopOnce = new(sync.Once)
+	w.closeOnce = new(sync.Once)
 	return w, err
 }
 
@@ -45,10 +49,32 @@ func (w *Win32Watcher) isStopped() bool {
 	return atomic.LoadInt32(w.stopNotify) == 1
 }
 
-func (w *Win32Watcher) SetStop() {
-	w.stopOnce.Do(func() {
-		atomic.StoreInt32(w.stopNotify, 1)
+func (w Win32Watcher) closeNotify() {
+	w.closeOnce.Do(func() {
+		close(w.notify)
 	})
+}
+
+func (w *Win32Watcher) SetStop() {
+	if w.isStopped() {
+		logging.Logger.Fmt.Infof("%v.SetStop 已停止", w.Str())
+		return
+	}
+
+	logging.Logger.Fmt.Infof("%v.SetStop 正在停止...", w.Str())
+	atomic.StoreInt32(w.stopNotify, 1)
+	w.closeNotify()
+
+	// 产生一个临时变更事件，用于及时退出此线程
+	fp, err := ioutil.TempFile(w.root, meta.IgnoreFlag)
+	if err != nil {
+		return
+	}
+	defer func() {
+		fp.Close()
+		_ = os.Remove(fp.Name())
+	}()
+	_, _ = fp.WriteString(meta.IgnoreFlag)
 }
 
 func (w *Win32Watcher) Start() (_ chan FileWatchingObj, err error) {
@@ -83,12 +109,15 @@ func (w *Win32Watcher) changeDirAccessRight() (err error) {
 
 func (w *Win32Watcher) asyncLoop() (err error) {
 	go func() {
+		defer func() {
+			logging.Logger.Fmt.Infof("%v.asyncLoop【终止】", w.Str())
+		}()
+
 		defer syscall.CloseHandle(w.rootDescriptor)
-		defer close(w.notify)
+		defer w.closeNotify()
 
 		for {
 			if w.isStopped() {
-				//logging.Logger.Fmt.Warnf("Win32Watcher.asyncLoop 终止")
 				return
 			}
 			if err = w.readDirectoryChanges(); err != nil {
@@ -114,12 +143,16 @@ func (w *Win32Watcher) readDirectoryChanges() (err error) {
 }
 
 func (w *Win32Watcher) collectChangeInfo() {
+	defer func() {
+		recover() // send to notify channel
+	}()
+
+	if w.isStopped() {
+		return
+	}
+
 	var offset uint32
 	for {
-		if w.isStopped() {
-			return
-		}
-
 		raw := (*syscall.FileNotifyInformation)(unsafe.Pointer(&w.buffer[offset]))
 		buf := (*[syscall.MAX_PATH]uint16)(unsafe.Pointer(&raw.FileName))
 		name := syscall.UTF16ToString(buf[:raw.FileNameLength/2])
@@ -144,6 +177,10 @@ func (w *Win32Watcher) collectChangeInfo() {
 		info.Mode = fi.Mode()
 		info.Size = fi.Size()
 		info.Event = tools.ConvertToWin32Event(raw.Action)
+
+		if w.isStopped() {
+			return
+		}
 		w.notify <- *info
 
 		if raw.NextEntryOffset == 0 {
@@ -154,4 +191,8 @@ func (w *Win32Watcher) collectChangeInfo() {
 			break
 		}
 	}
+}
+
+func (w *Win32Watcher) Str() string {
+	return fmt.Sprintf("<Win32Watcher(dir=%v)>", w.root)
 }

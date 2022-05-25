@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/boltdb/bolt"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
 	"github.com/journeymidnight/aws-sdk-go/service/s3"
@@ -91,6 +92,7 @@ type CDPExecutor struct {
 	startTs         int64
 	stopNotify      *int32    // 用户禁用/取消信号、异常终止信号
 	lastEventPusher *Recorder // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
+	localCtxDB      *bolt.DB  // 本地用于记录服务关键信息的文件数据库
 }
 
 func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
@@ -108,11 +110,19 @@ func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExec
 	ce.lastEventPusher = new(Recorder)
 	ce.lastEventPusher.m = new(sync.Map)
 	ce.startTs = time.Now().Unix()
-	logger.Fmt.Infof("init CDPExecutor is ok")
+
+	ce.localCtxDB, err = bolt.Open(meta.ServerCtxWin, 0666, nil)
+	if err != nil {
+		logger.Fmt.Errorf("NewCDPExecutor. bolt.Open ERR=%v", err)
+		return
+	}
+
+	logger.Fmt.Infof("NewCDPExecutor. 成功初始化CDP执行器(conf=%v)", config.ID)
 	return
 }
 
 func NewCDPExecutorWhenReload(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
+
 	task, err := models.QueryBackupTaskByConfID(dp.DB, config.ID)
 	if err != nil {
 		return nil, fmt.Errorf("reload conf(id=%v) is NULL", config.ID)
@@ -125,7 +135,7 @@ func NewCDPExecutorWhenReload(config *models.ConfigModel, dp *models.DBProxy) (c
 
 	ce.task = &task
 	ce.isReload = true
-	logger.Fmt.Infof("NewCDPExecutorWhenReload reload cdp executor(conf=%v) is ok.", config.ID)
+	logger.Fmt.Infof("NewCDPExecutor. 重启CDP执行器(conf=%v)完成，等待系统调度", config.ID)
 	return
 }
 
@@ -206,34 +216,54 @@ func (c *CDPExecutor) isStopped() bool {
 }
 
 func (c *CDPExecutor) monitorStopNotify() {
-	logger.Fmt.Infof("%v.monitorStopNotify 开始监控终止事件、用户取消事件等", c.Str())
+	logger.Fmt.Infof("%v.monitorStopNotify 监控线程已启动, 正在持续捕捉CDP中断事件...", c.Str())
+
+	defer func() {
+		logger.Fmt.Infof("%v.monitorStopNotify【终止】", c.Str())
+	}()
+
 	for {
 		ticker := time.NewTicker(5 * time.Second)
 		for range ticker.C {
-			if models.IsEnable(c.dp.DB, c.config.ID) {
+			ok, err := models.IsEnable(c.dp.DB, c.config.ID)
+			if ok && err == nil {
 				continue
+			}
+			if !ok && err == nil {
+				logger.Fmt.Info("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【取消事件】")
+			} else if err != nil {
+				logger.Fmt.Info("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【备份服务器连接失败】")
 			}
 			c.stop()
 			ticker.Stop()
-			logger.Fmt.Infof("%v.monitorStopNotify【终止】", c.Str())
 		}
 	}
 }
 
 func (c *CDPExecutor) stop() {
+	logger.Fmt.Infof("%v.stop 正在停止CDP执行器", c.Str())
+
 	if c.isStopped() {
 		return
 	}
 	atomic.StoreInt32(c.stopNotify, 1)
+	if c.walker != nil {
+		c.walker.SetStop()
+	}
+	if c.watcher != nil {
+		c.watcher.SetStop()
+	}
 }
 
 func (c *CDPExecutor) logic() {
-	var err error
+	logger.Fmt.Infof("%v.monitorStopNotify 开始执行核心逻辑", c.Str())
 
+	var err error
 	if err = c.initArgs(); err != nil {
 		logger.Fmt.Errorf("%v.logic initArgs err=%v", c.Str(), err)
 		return
 	}
+	logger.Fmt.Infof("%v.monitorStopNotify 初始化环境参数完成", c.Str())
 
 	/*对于启动流程的说明如下：
 	启动任务方式有两种
@@ -244,6 +274,7 @@ func (c *CDPExecutor) logic() {
 	if err = models.DeleteNotUploadFileFlows(c.dp.DB, c.config.ID); err != nil {
 		return
 	}
+	logger.Fmt.Infof("%v.monitorStopNotify 清理过期事件完成", c.Str())
 
 	if c.isReload {
 		if err = c.logicWhenReload(); err != nil {
@@ -256,8 +287,6 @@ func (c *CDPExecutor) logic() {
 	}
 
 	c.uploadQueue2Storage()
-	c.fullWG.Wait()
-	c.incrWG.Wait()
 }
 
 func (c *CDPExecutor) logicWhenReload() (err error) {
@@ -425,10 +454,12 @@ func (c *CDPExecutor) uploadQueue2Storage() {
 
 func (c *CDPExecutor) uploadFullQueue() {
 	go c.uploadDispatcher(true)
+	logger.Fmt.Infof("%v.uploadFullQueue 开始全量扫描备份", c.Str())
 }
 
 func (c *CDPExecutor) uploadIncrQueue() {
 	go c.uploadDispatcher(false)
+	logger.Fmt.Infof("%v.uploadIncrQueue 开始持续增量备份", c.Str())
 }
 
 func (c *CDPExecutor) uploadDispatcher(full bool) {
@@ -438,7 +469,10 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		queue = c.incrQueue
 		pool  = c.incrPool
 	)
-	defer c.stopExecutorWhenErr(err)
+
+	defer func() {
+		logger.Fmt.Infof("%v.uploadDispatcher(FULL %v)【终止】", c.Str(), full)
+	}()
 
 	if full {
 		queue = c.fullQueue
@@ -450,7 +484,6 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 
 	for fwo := range queue {
 		if c.isStopped() {
-			logger.Fmt.Warnf("%v.uploadDispatcher【终止】", c.Str())
 			return
 		}
 		if !c.isValidPath(fwo.Path, fwo.Time) {
@@ -463,15 +496,25 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		}
 	}
 
-	if !full {
+	if c.isStopped() {
 		return
+	}
+
+	if !full {
+		//c.incrWG.Wait()  // TODO 不用阻塞在此
+		logger.Fmt.Infof("%v.logic incrWG 退出阻塞状态...", c.Str())
+		return
+	} else {
+		//c.fullWG.Wait() // TODO 不用阻塞在此
+		logger.Fmt.Infof("%v.logic fullWG 退出阻塞状态...", c.Str())
 	}
 
 	err = models.UpdateBackupTaskStatusByConfID(c.dp.DB, c.config.ID, meta.CDPCDPING)
 	if err != nil {
-		logger.Fmt.Errorf("%v.uploadDispatcher failed to convert CDPING status, err=%v", c.Str(), err)
+		logger.Fmt.Warnf("%v.uploadDispatcher failed to convert CDPING status, err=%v", c.Str(), err)
 		return
 	}
+
 	logger.Fmt.Infof("%v.uploadDispatcher exit，task(%v) 进入【CDPING】状态", c.Str(), c.task.ID)
 }
 
@@ -489,18 +532,18 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, 
 		未找到：
 		   直接上传
 		*/
-		if !models.IsEnable(c.dp.DB, c.config.ID) {
-			logger.Fmt.Warnf("%v.uploadOneFile【终止】", c.Str())
+		err = c.upload2DiffStorage(fwo)
+		if err == nil {
 			return
 		}
-		if err := c.upload2DiffStorage(fwo); err != nil {
-			logger.Fmt.Warnf("%v.uploadOneFile _handleFileFlow ERR=%v", c.Str(), err)
+
+		// 连接不上备份服务器或SQL错误（不对文件类型错误做处理）
+		if strings.Contains(err.Error(), "SQLSTATE") {
+			logger.Fmt.Warnf("%v.uploadOneFile ERR=%v", c.Str(), err)
 			// TODO 删除远端文件
-			err_ := models.UpdateFileFlowStatus(c.dp.DB, c.config.ID, fwo.ID, meta.FFStatusError)
-			if err_ != nil {
-				logger.Fmt.Errorf("%v.uploadOneFile UpdateFileFlowStatus (f%v) ERR=%v", c.Str(), fwo.ID, err_)
-			}
 			return
+		} else {
+			err = nil
 		}
 	})
 }
@@ -510,15 +553,21 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 		if err == nil {
 			if err = models.UpdateFileFlowStatus(
 				c.dp.DB, c.config.ID, ffm.ID, meta.FFStatusFinished); err != nil {
-				logger.Fmt.Errorf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `FINISHED` ERR=%v", c.Str(), err)
-				return
+				logger.Fmt.Warnf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `FINISHED` ERR=%v",
+					c.Str(), ffm.Path, err)
+			}
+		} else {
+			if err = models.UpdateFileFlowStatus(c.dp.DB, c.config.ID, ffm.ID, meta.FFStatusError); err != nil {
+				logger.Fmt.Warnf(
+					"%v.uploadOneFile UpdateFileFlowStatus (f%v) ERR=%v", c.Str(), ffm.ID, err)
 			}
 		}
 	}()
 
 	if err = models.UpdateFileFlowStatus(
 		c.dp.DB, c.config.ID, ffm.ID, meta.FFStatusSyncing); err != nil {
-		logger.Fmt.Errorf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `SYNCING` ERR=%v", c.Str(), ffm.ID, err)
+		logger.Fmt.Warnf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `SYNCING` ERR=%v",
+			c.Str(), ffm.ID, err)
 		return
 	}
 
@@ -589,8 +638,11 @@ func (c *CDPExecutor) incr() {
 }
 
 func (c *CDPExecutor) scanNotify() {
+	defer func() {
+		logger.Fmt.Infof("%v.scanNotify【终止】", c.Str())
+	}()
+
 	var err error
-	defer c.stopExecutorWhenErr(err)
 	defer close(c.fullQueue)
 
 	if err = c.startWalker(); err != nil {
@@ -599,8 +651,7 @@ func (c *CDPExecutor) scanNotify() {
 
 	for fwo := range c.walkerQueue {
 		if c.isStopped() {
-			logger.Fmt.Warnf("%v.scanNotify【终止】", c.Str())
-			c.walker.setStop()
+			//c.walker.SetStop()
 			return
 		}
 		if err = c.putFile2FullOrIncrQueue(fwo, true); err != nil {
@@ -608,7 +659,10 @@ func (c *CDPExecutor) scanNotify() {
 		}
 	}
 
-	logger.Fmt.Infof("%v.scanNotify close FullQueue", c.Str())
+	// 两段式日志, 提示线程终止
+	if c.isStopped() {
+		return
+	}
 }
 
 // 由于连续变更的文件集，将其压入incrQueue时，必须是有新的不同的变更记录来驱动last其压入incrQueue
@@ -640,8 +694,12 @@ func (r *Recorder) Load() (nt_notify.FileWatchingObj, int64, bool) {
 }
 
 func (c *CDPExecutor) fsNotify() {
+	defer func() {
+		logger.Fmt.Infof("%v.fsNotify【终止】", c.Str())
+	}()
+
 	var err error
-	defer c.stopExecutorWhenErr(err)
+	defer close(c.incrQueue)
 
 	if err = c.startWatcher(); err != nil {
 		return
@@ -651,8 +709,7 @@ func (c *CDPExecutor) fsNotify() {
 
 	for fwo := range c.watcherQueue {
 		if c.isStopped() {
-			logger.Fmt.Warnf("%v.fsNotify【终止】", c.Str())
-			c.watcher.SetStop()
+			//c.watcher.SetStop()
 			return
 		}
 		/*连续文件变更记录的去重
@@ -693,6 +750,10 @@ func (c *CDPExecutor) fsNotify() {
 				}
 			}
 		}
+	}
+
+	if c.isStopped() {
+		return
 	}
 }
 
@@ -741,13 +802,7 @@ func (c *CDPExecutor) startWatcher() (err error) {
 }
 
 func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, full bool) (err error) {
-	defer func() {
-		if err != nil {
-			logger.Fmt.Errorf("putFile2FullOrIncrQueue err=%v", err)
-			return
-		}
-	}()
-	if strings.Contains(fwo.Name, meta.RestoreSuffix) {
+	if strings.Contains(fwo.Name, meta.IgnoreFlag) {
 		return
 	}
 	fh, err := models.QueryLastSameNameFile(c.dp.DB, c.config.ID, fwo.Path)
@@ -813,10 +868,10 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 		}
 		// 说明新的变更事件已经产生，且已存在于c.watcherQueue中，所以忽略本次事件
 		if fi.ModTime().Unix() > fwo.Time {
-			logger.Fmt.Debugf("忽略%v", fwo.Path)
+			logger.Fmt.Debugf("忽略过期事件 %v", fwo.Path)
 			return nil
 		}
-		logger.Fmt.Debugf("回溯%v", fwo.Path)
+		logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Path)
 		c.watcherQueue <- fwo
 	}
 
@@ -909,17 +964,19 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 	logger.Fmt.Infof("%v.putFileEventWhenTimeout start...", c.Str())
 
 	go func() {
+		defer func() {
+			logger.Fmt.Infof("%v.putFileEventWhenTimeout【终止】", c.Str())
+		}()
+
 		var (
 			err error
 			fwo nt_notify.FileWatchingObj
 			t   int64
 			ok  bool
 		)
-		defer c.stopExecutorWhenErr(err)
 
 		for {
 			if c.isStopped() {
-				logger.Fmt.Infof("%v.putFileEventWhenTimeout【终止】", c.Str())
 				return
 			}
 			time.Sleep(5 * time.Second)
@@ -937,11 +994,4 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 			}
 		}
 	}()
-}
-
-func (c *CDPExecutor) stopExecutorWhenErr(err error) {
-	if err != nil {
-		logger.Fmt.Errorf("%v.stopExecutorWhenErr ERR=%v", c.Str(), err)
-		c.stop()
-	}
 }
