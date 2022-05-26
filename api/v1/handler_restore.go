@@ -11,15 +11,6 @@ import (
 	"net/http"
 )
 
-// StartRestore
-// @Summary xxx
-// @Description 开始执行恢复操作
-// @Tags RestoreTask相关接口
-// @Accept application/json
-// @Produce application/json
-// @Param id path int true "恢复任务ID"
-// @Success 200 {object} app.Response
-// @Router /restore/:id/start [get]
 func StartRestore(c *gin.Context) {
 	appG := app.Gin{C: c}
 	id := com.StrTo(c.Param("id")).MustInt64()

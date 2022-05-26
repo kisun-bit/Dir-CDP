@@ -36,7 +36,7 @@ func (_ RestoreTaskModel) TableName() string {
 }
 
 func (t *RestoreTaskModel) String() string {
-	return fmt.Sprintf("<RestoreTaskModel(ID=%v, Conf=%v, Start=%v>", t.ID, t.ConfID, t.Start.Format(meta.TimeFMT))
+	return fmt.Sprintf("<RestoreTaskModel(ID=%v, Conf=%v, StartWithRetry=%v>", t.ID, t.ConfID, t.Start.Format(meta.TimeFMT))
 }
 
 func QueryRestoreTaskByID(db *gorm.DB, task int64) (t RestoreTaskModel, err error) {

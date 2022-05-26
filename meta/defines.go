@@ -73,7 +73,10 @@ const TriggerMan = 1
 const SplitFlag = "@jrsa@"
 
 // 备份服务器IP地址信息（可能存在多个）
-const ServerIPsWin = `C:\rongan\server.ips`
+const ServerIPsWin = `C:\rongan\rongan-fnotify\server.ips`
 
 // 备份过程出错，记录错误上下文的文件
-const ServerCtxWin = `C:\rongan\server_ctx.db`
+const ServerCtxWin = `C:\rongan\rongan-fnotify\server_ctx.db`
+
+// 备份过程的锁文件目录
+const HandlerBaseDir = `C:\rongan\rongan-fnotify\handles\`

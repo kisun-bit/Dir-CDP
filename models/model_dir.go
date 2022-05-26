@@ -3,6 +3,8 @@ package models
 import (
 	"fmt"
 	"gorm.io/gorm"
+	"jingrongshuan/rongan-fnotify/meta"
+	"jingrongshuan/rongan-fnotify/tools"
 	"path/filepath"
 	"strings"
 )
@@ -59,7 +61,7 @@ func DeleteDirByConfID(db *gorm.DB, conf int64) (err error) {
 	return nil
 }
 
-func _dirTable(conf int64) string {
+func _eventDirTable(conf int64) string {
 	return fmt.Sprintf(`"rongan_fnotify"."event_dir_%v"`, conf)
 }
 
@@ -68,10 +70,17 @@ func CreateDirIfNotExists(db *gorm.DB, conf int64, path, ext string) (err error)
     values ('%v', '%v', '%v', '%v') 
     ON CONFLICT (path) DO NOTHING`
 	sql := fmt.Sprintf(sqlTmp,
-		_dirTable(conf),
-		strings.ReplaceAll(path, `'`, `''`),
+		_eventDirTable(conf),
+		strings.ReplaceAll(tools.CorrectDirWithPlatform(path, meta.IsWin), `'`, `''`),
 		strings.ReplaceAll(filepath.Base(path), `'`, `''`),
-		strings.ReplaceAll(filepath.Dir(path), `'`, `''`),
+		strings.ReplaceAll(tools.CorrectDirWithPlatform(filepath.Dir(path), meta.IsWin), `'`, `''`),
 		strings.ReplaceAll(ext, `'`, `''`))
 	return db.Exec(sql).Error
+}
+
+func QueryDirByPath(db *gorm.DB, conf int64, path string) (d EventDirModel, err error) {
+	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path='%v'`,
+		_eventDirTable(conf), strings.ReplaceAll(path, `'`, `''`))
+	err = db.Raw(sql_).Scan(&d).Error
+	return
 }

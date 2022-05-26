@@ -163,3 +163,7 @@ func EnableConfig(db *gorm.DB, conf int64) (err error) {
 		map[string]interface{}{"enable": true})
 	return r.Error
 }
+
+type ServerAddress struct {
+	ServerAddress string `json:"server_address"`
+}

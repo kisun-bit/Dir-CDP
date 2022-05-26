@@ -10,13 +10,9 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 )
 
-// @Summary 上传文件
-// @Produce json
-// @Success 200 {object} app.Response
-// @Failure 500 {object} app.Response
-// @Router /api/v1/file/upload [post]
 func Upload(c *gin.Context) {
 	appG := app.Gin{C: c}
 
@@ -40,6 +36,9 @@ func Upload(c *gin.Context) {
 			appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
 			return
 		}
+		if _, err_ := os.Stat(filepath.Dir(filename)); err_ != nil {
+			_ = os.MkdirAll(filepath.Dir(filename), 0666)
+		}
 		dst, err := os.Create(filename)
 		if err != nil {
 			appG.Response(http.StatusBadRequest, statuscode.EXISTSSAMENAMEFILE, nil)
@@ -57,11 +56,6 @@ func Upload(c *gin.Context) {
 	return
 }
 
-// @Summary 下载文件
-// @Produce json
-// @Success 200 {object} app.Response
-// @Failure 500 {object} app.Response
-// @Router /api/v1/download/:b64 [get]
 func Download(c *gin.Context) {
 	appG := app.Gin{C: c}
 	b64 := com.StrTo(c.Param("b64")).String()

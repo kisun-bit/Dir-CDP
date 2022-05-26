@@ -24,7 +24,7 @@ func (_ BackupTaskModel) TableName() string {
 }
 
 func (t *BackupTaskModel) String() string {
-	return fmt.Sprintf("<BackupTaskModel(ID=%v, Conf=%v, Start=%v>", t.ID, t.ConfID, t.Start.Format(meta.TimeFMT))
+	return fmt.Sprintf("<BackupTaskModel(ID=%v, Conf=%v, StartWithRetry=%v>", t.ID, t.ConfID, t.Start.Format(meta.TimeFMT))
 }
 
 func CreateBackupTaskModel(db *gorm.DB, btm *BackupTaskModel) (err error) {
@@ -40,4 +40,8 @@ func QueryBackupTaskByConfID(db *gorm.DB, cid int64) (b BackupTaskModel, err err
 func UpdateBackupTaskStatusByConfID(db *gorm.DB, cid int64, status string) (err error) {
 	return db.Model(&BackupTaskModel{}).Where("conf_id = ?", cid).Updates(
 		map[string]interface{}{"status": status}).Error
+}
+
+type TaskExt struct {
+	Handler string `json:"handler"`
 }

@@ -2,9 +2,12 @@ package logic
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/boltdb/bolt"
+	"github.com/gofrs/flock"
+	"github.com/gofrs/uuid"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
 	"github.com/journeymidnight/aws-sdk-go/service/s3"
@@ -13,6 +16,7 @@ import (
 	"github.com/kr/pretty"
 	"github.com/panjf2000/ants/v2"
 	"io"
+	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/models"
 	"jingrongshuan/rongan-fnotify/nt_notify"
@@ -22,7 +26,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,6 +68,8 @@ const (
 type CDPExecutor struct {
 	//ctx          context.Context
 	//cancel       context.CancelFunc // 取消事件
+	handler         string
+	locker          *flock.Flock
 	config          *models.ConfigModel
 	dp              *models.DBProxy
 	task            *models.BackupTaskModel
@@ -90,13 +95,14 @@ type CDPExecutor struct {
 	walker          *Walker
 	walkerQueue     chan nt_notify.FileWatchingObj
 	startTs         int64
-	stopNotify      *int32    // 用户禁用/取消信号、异常终止信号
-	lastEventPusher *Recorder // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
-	localCtxDB      *bolt.DB  // 本地用于记录服务关键信息的文件数据库
+	stopNotify      *int32         // 用户禁用/取消信号、异常终止信号
+	lastEventPusher *Recorder      // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
+	localCtxDB      *bolt.DB       // 本地用于记录服务关键信息的文件数据库
+	exitNotify      chan ErrorCode // 异常记录
+	exitNotifyOnce  *sync.Once     // 多线程环境下仅报告一次异常记录
 }
 
-func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
-	ce = new(CDPExecutor)
+func initOrResetCDPExecutor(ce *CDPExecutor, config *models.ConfigModel, dp *models.DBProxy) (err error) {
 	ce.config = config
 	ce.dp = dp
 
@@ -110,13 +116,22 @@ func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExec
 	ce.lastEventPusher = new(Recorder)
 	ce.lastEventPusher.m = new(sync.Map)
 	ce.startTs = time.Now().Unix()
+	ce.exitNotify = make(chan ErrorCode)
+	ce.exitNotifyOnce = new(sync.Once)
 
-	ce.localCtxDB, err = bolt.Open(meta.ServerCtxWin, 0666, nil)
-	if err != nil {
-		logger.Fmt.Errorf("NewCDPExecutor. bolt.Open ERR=%v", err)
+	//ce.localCtxDB, err = bolt.Open(meta.ServerCtxWin, 0666, nil)
+	//if err != nil {
+	//	logger.Fmt.Errorf("NewCDPExecutor. bolt.Open ERR=%v", err)
+	//	return
+	//}
+	return nil
+}
+
+func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
+	ce = new(CDPExecutor)
+	if err = initOrResetCDPExecutor(ce, config, dp); err != nil {
 		return
 	}
-
 	logger.Fmt.Infof("NewCDPExecutor. 成功初始化CDP执行器(conf=%v)", config.ID)
 	return
 }
@@ -178,7 +193,7 @@ func AsyncStartCDPExecutor(ip string, conf int64, reload bool) (err error) {
 	}
 	logger.Fmt.Infof("AsyncStartCDPExecutor IP(%v) ConfID(%v) new CDP executor", ip, conf)
 
-	if err = cdp.Start(); err != nil {
+	if err = cdp.StartWithRetry(); err != nil {
 		return
 	}
 	logger.Fmt.Infof("AsyncStartCDPExecutor IP(%v) ConfID(%v) start", ip, conf)
@@ -190,12 +205,13 @@ func (c *CDPExecutor) Str() string {
 	return fmt.Sprintf("<CDP(conf=%v, task=%v, dir=%v)>", c.config.ID, c.task.ID, c.config.Dir)
 }
 
-func (c *CDPExecutor) Start() (err error) {
+func (c *CDPExecutor) StartWithRetry() (err error) {
 	if !c.isReload {
 		if err = c.initTaskOnce(); err != nil {
 			return
 		}
 	}
+
 	if err = c.dp.RegisterEventFileModel(c.config.ID); err != nil {
 		logger.Fmt.Errorf("%v.Start RegisterEventFileModel ERR=%v", c.Str(), err)
 		return
@@ -205,10 +221,82 @@ func (c *CDPExecutor) Start() (err error) {
 		return
 	}
 
+	// 无限重试
+	go func() {
+		for {
+			sa := new(models.ServerAddress)
+			if err = json.Unmarshal([]byte(c.config.ExtInfo), &sa); err != nil {
+				logger.Fmt.Warnf("%v retry failed. parse ip ERR=%v", c.Str(), err)
+				break
+			}
+			if c.dp, err = models.NewDBProxy(sa.ServerAddress); err != nil {
+				// do nothing
+			} else {
+				ec := c.Start()
+				if ec == ExitErrCodeUserCancel ||
+					ec == ExitErrCodeTaskReplicate ||
+					ec == ExitErrCodeLackHandler {
+					break
+				}
+			}
+			time.Sleep(5 * time.Second)
+		}
+	}()
+	return nil
+}
+
+func (c *CDPExecutor) Start() (ec ErrorCode) {
+	if err := c.bindHandler(); err != nil {
+		return ExitErrCodeLackHandler
+	}
+	logger.Fmt.Infof("%v.Start 成功分配任务执行句柄%v", c.Str(), c.handler)
+
+	locked, err := c.locker.TryLock()
+	if err != nil {
+		logger.Fmt.Errorf("%v.StartWithRetry TryLock ERR=%v", c.Str(), err)
+		return ExitErrCodeTaskReplicate
+	}
+	logger.Fmt.Infof("%v.Start 成功锁定句柄%v", c.Str(), c.handler)
+
+	if locked {
+		defer func() {
+			if err = c.locker.Unlock(); err != nil {
+				logger.Fmt.Errorf("%v.StartWithRetry UnLock ERR=%v", c.Str(), err)
+				logger.Fmt.Errorf("%v.Start 解锁句柄失败%v", c.Str(), c.handler)
+			} else {
+				logger.Fmt.Infof("%v.Start 成功解锁句柄%v", c.Str(), c.handler)
+			}
+		}()
+	}
+
 	go c.monitorStopNotify()
 	go c.logic()
 
+	// 一直阻塞到有退出通知为止
+	ec = <-c.exitNotify
+	logger.Fmt.Infof("%v.Start CDP执行器发生【%v】, 正在重试...请稍后", c.Str(), ErrByCode(ec))
+	if ec == ExitErrCodeUserCancel {
+		return
+	}
+
+	// 重置CDPExecutor
+	address := c.server.Address
+	if err := initOrResetCDPExecutor(c, c.config, c.dp); err != nil {
+		return
+	}
+	c.isReload = true
+	c.server.Address = address
+	logger.Fmt.Infof("%v.initOrResetCDPExecutor 重置完成", c.Str())
 	return
+}
+
+func (c *CDPExecutor) bindHandler() (err error) {
+	if c.handler, err = c.fetchHandler(); err != nil {
+		logger.Fmt.Errorf("%v.bindHandler ERR=%v", c.Str(), err)
+		return
+	}
+	c.locker = flock.New(c.handlerPath(c.handler))
+	return nil
 }
 
 func (c *CDPExecutor) isStopped() bool {
@@ -226,15 +314,15 @@ func (c *CDPExecutor) monitorStopNotify() {
 		ticker := time.NewTicker(5 * time.Second)
 		for range ticker.C {
 			ok, err := models.IsEnable(c.dp.DB, c.config.ID)
-			if ok && err == nil {
+			if !ok && err == nil {
+				logger.Fmt.Infof("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【取消事件】", c.Str())
+				c.notifyErr2Executor(ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
+			} else if err != nil {
+				logger.Fmt.Infof("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【备份服务器连接失败】", c.Str())
+				c.notifyErr2Executor(ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
+			} else if ok {
 				continue
 			}
-			if !ok && err == nil {
-				logger.Fmt.Info("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【取消事件】")
-			} else if err != nil {
-				logger.Fmt.Info("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【备份服务器连接失败】")
-			}
-			c.stop()
 			ticker.Stop()
 		}
 	}
@@ -469,7 +557,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		queue = c.incrQueue
 		pool  = c.incrPool
 	)
-
+	defer c.catchErr(err)
 	defer func() {
 		logger.Fmt.Infof("%v.uploadDispatcher(FULL %v)【终止】", c.Str(), full)
 	}()
@@ -489,7 +577,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		if !c.isValidPath(fwo.Path, fwo.Time) {
 			continue
 		}
-		logger.Fmt.Debugf("[监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", fwo.Path)
+		logger.Fmt.Debugf("%v | [监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", c.Str(), fwo.Path)
 		wg.Add(1)
 		if err = c.uploadOneFile(pool, fwo, wg); err != nil {
 			return
@@ -540,7 +628,6 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, 
 		// 连接不上备份服务器或SQL错误（不对文件类型错误做处理）
 		if strings.Contains(err.Error(), "SQLSTATE") {
 			logger.Fmt.Warnf("%v.uploadOneFile ERR=%v", c.Str(), err)
-			// TODO 删除远端文件
 			return
 		} else {
 			err = nil
@@ -549,6 +636,8 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, 
 }
 
 func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) {
+	defer c.catchErr(err)
+
 	defer func() {
 		if err == nil {
 			if err = models.UpdateFileFlowStatus(
@@ -589,8 +678,10 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("filename", filepath.Join(ffm.Parent, ffm.Name+ffm.Tag))
+
+	part, _ := writer.CreateFormFile("filename", ffm.Storage)
 	if _, err = io.Copy(part, fp); err != nil {
+		logger.Fmt.Errorf("%v.upload2host io.Copy ERR=%v", c.Str(), err)
 		return
 	}
 	if err = writer.Close(); err != nil {
@@ -600,8 +691,16 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 	r, _ := http.NewRequest("POST", c.hostSession, body)
 	r.Header.Add("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
-	if _, err = client.Do(r); err != nil {
+	if resp, err := client.Do(r); err != nil {
+		logger.Fmt.Errorf("%v.upload2host client.Do ERR=%v", c.Str(), err)
 		return err
+	} else {
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		} else {
+			bb, _ := ioutil.ReadAll(resp.Body)
+			logger.Fmt.Errorf("%v.upload2host status-err %v", string(bb))
+		}
 	}
 	return nil
 }
@@ -616,7 +715,7 @@ func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err er
 
 	_, err = uploader.Upload(&s3manager.UploadInput{
 		Bucket: aws.String(c.storageS3.TargetConfS3.Bucket),
-		Key:    aws.String(tools.GenerateS3Key(filepath.Join(ffm.Parent, ffm.Name+ffm.Tag), c.config.ID)),
+		Key:    aws.String(ffm.Storage),
 		Body:   fp,
 	})
 	if err != nil {
@@ -643,6 +742,7 @@ func (c *CDPExecutor) scanNotify() {
 	}()
 
 	var err error
+	defer c.catchErr(err)
 	defer close(c.fullQueue)
 
 	if err = c.startWalker(); err != nil {
@@ -699,6 +799,7 @@ func (c *CDPExecutor) fsNotify() {
 	}()
 
 	var err error
+	defer c.catchErr(err)
 	defer close(c.incrQueue)
 
 	if err = c.startWatcher(); err != nil {
@@ -794,7 +895,7 @@ func (c *CDPExecutor) startWatcher() (err error) {
 
 	c.watcherQueue, err = c.watcher.Start()
 	if err != nil {
-		logger.Fmt.Errorf("%v.fsNotify Start Error=%s", c.Str(), err.Error())
+		logger.Fmt.Errorf("%v.fsNotify StartWithRetry Error=%s", c.Str(), err.Error())
 		return
 	}
 	logger.Fmt.Infof("%v.fsNotify start watcher(%v)...", c.Str(), c.config.Dir)
@@ -907,6 +1008,13 @@ func (c *CDPExecutor) isValidPath(path string, mtime int64) bool {
 }
 
 func (c *CDPExecutor) initTaskOnce() (err error) {
+	var hb uuid.UUID
+	defer func() {
+		if err == nil && hb.String() != "" {
+			_, err = os.Create(filepath.Join(meta.HandlerBaseDir, hb.String()))
+		}
+	}()
+
 	c_, err := models.QueryBackupTaskByConfID(c.dp.DB, c.config.ID)
 	if err == nil {
 		c.task = &c_
@@ -919,6 +1027,18 @@ func (c *CDPExecutor) initTaskOnce() (err error) {
 	c.task.Trigger = meta.TriggerMan
 	c.task.ConfID = c.config.ID
 	c.task.Status = meta.CDPUNSTART
+
+	hb, err = uuid.NewV4()
+	if err != nil {
+		return err
+	}
+	tex := new(models.TaskExt)
+	tex.Handler = hb.String()
+	tes, err := json.Marshal(tex)
+	if err != nil {
+		return err
+	}
+	c.task.ExtInfo = string(tes)
 	return models.CreateBackupTaskModel(c.dp.DB, c.task)
 }
 
@@ -942,18 +1062,17 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 		ff.Tag = tools.ConvertModTime2VersionFlag(e.Time)
 		ff.Name += "." + ff.Tag
 	}
+	d, err := models.QueryDirByPath(c.dp.DB, c.config.ID, ff.Parent)
+	if err != nil {
+		return fm, err
+	}
 
 	switch c.targetType {
 	case TTHost:
-		ff.Storage = filepath.Join(
-			c.storageHost.TargetConfHost.RemotePath,
-			strconv.FormatInt(c.config.ID, 0xa),
-			strings.Replace(ff.Parent, c.config.Dir, "", 1),
-			ff.Name,
-		)
-		ff.Storage = tools.CorrectPathWithPlatform(ff.Storage, tools.IsWin(c.target.Type))
+		ff.Storage = tools.GenerateRemoteHostKey(c.config.ID, d.ID,
+			c.storageHost.TargetConfHost.RemotePath, tools.IsWin(c.target.Type))
 	case TTS3:
-		ff.Storage = tools.GenerateS3Key(ff.Path, c.config.ID)
+		ff.Storage = tools.GenerateS3Key(c.config.ID, d.ID)
 	}
 
 	err = models.CreateFileFlowModel(c.dp.DB, c.config.ID, ff)
@@ -974,6 +1093,7 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 			t   int64
 			ok  bool
 		)
+		defer c.catchErr(err)
 
 		for {
 			if c.isStopped() {
@@ -994,4 +1114,43 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 			}
 		}
 	}()
+}
+
+func (c *CDPExecutor) notifyErr2Executor(code ErrorCode, err error) {
+	if err == nil {
+		return
+	}
+
+	c.exitNotifyOnce.Do(func() {
+		logger.Fmt.Errorf("%v.notifyErr2Executor 捕捉到%v, CDP执行器等待退出...",
+			c.Str(), ExtendErr(code, err.Error()))
+		c.exitNotify <- code
+		c.stop()
+	})
+}
+
+func (c *CDPExecutor) catchErr(err error) {
+	if err != nil {
+		c.notifyErr2Executor(ExitErrCodeOriginErr, err)
+	}
+}
+
+func (c *CDPExecutor) fetchHandler() (handler string, err error) {
+	tex := new(models.TaskExt)
+	if err = json.Unmarshal([]byte(c.task.ExtInfo), tex); err != nil {
+		return
+	}
+	hp := c.handlerPath(tex.Handler)
+	if _, err = os.Stat(hp); err != nil {
+		if fp, err := os.Create(hp); err != nil {
+			return tex.Handler, err
+		} else {
+			fp.Close()
+		}
+	}
+	return tex.Handler, nil
+}
+
+func (c *CDPExecutor) handlerPath(handle string) string {
+	return filepath.Join(meta.HandlerBaseDir, handle)
 }

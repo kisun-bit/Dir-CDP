@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"github.com/gofrs/uuid"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/credentials"
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
@@ -10,6 +11,8 @@ import (
 	"jingrongshuan/rongan-fnotify/meta"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -78,14 +81,22 @@ func NewS3Client(
 	return S3Session, gos3.S3Client{Client: s3client}
 }
 
-func GenerateS3Key(path_ string, conf int64) string {
-	key := path_[1:]
-	if meta.IsWin {
-		key = strings.ReplaceAll(path_[:], "\\", "/")
-		key = strings.Replace(key, ":", "", 1)
+func GenerateS3Key(conf int64, dir int64) string {
+	uid, err := uuid.NewV4()
+	if err != nil {
+		panic(err)
 	}
-	key = fmt.Sprintf("FileCDP%v/%v", conf, key)
-	return key
+	return fmt.Sprintf("%v/%v", conf, dir, uid.String())
+}
+
+func GenerateRemoteHostKey(conf int64, dir int64, remote string, targetWin bool) string {
+	absRemote := filepath.Join(remote, strconv.FormatInt(conf, 10), strconv.FormatInt(dir, 10))
+	uid, err := uuid.NewV4()
+	if err != nil {
+		panic(err)
+	}
+	path := filepath.Join(absRemote, uid.String())
+	return CorrectPathWithPlatform(path, targetWin)
 }
 
 func String2Time(str string) (t time.Time) {

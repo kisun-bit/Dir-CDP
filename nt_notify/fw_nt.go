@@ -57,11 +57,11 @@ func (w Win32Watcher) closeNotify() {
 
 func (w *Win32Watcher) SetStop() {
 	if w.isStopped() {
-		logging.Logger.Fmt.Infof("%v.SetStop 已停止", w.Str())
+		logging.Logger.Fmt.Infof("%v.SetStop 已停止文件更新事件捕捉器", w.Str())
 		return
 	}
 
-	logging.Logger.Fmt.Infof("%v.SetStop 正在停止...", w.Str())
+	logging.Logger.Fmt.Infof("%v.SetStop 正在关闭文件更新事件捕捉器...", w.Str())
 	atomic.StoreInt32(w.stopNotify, 1)
 	w.closeNotify()
 
