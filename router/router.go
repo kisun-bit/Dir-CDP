@@ -22,6 +22,8 @@ func InitRouter() *gin.Engine {
 		apiv1.POST("/upload", v1.Upload)
 		// 下载文件接口
 		apiv1.POST("/download/:b64", v1.Download)
+		// 删除文件接口
+		apiv1.POST("/delete/:b64", v1.Delete)
 		// NOTE. 更多接口可用studio中的接口来调度
 	}
 

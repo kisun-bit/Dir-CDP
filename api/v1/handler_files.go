@@ -59,12 +59,12 @@ func Upload(c *gin.Context) {
 func Download(c *gin.Context) {
 	appG := app.Gin{C: c}
 	b64 := com.StrTo(c.Param("b64")).String()
-	pathb, err := base64.StdEncoding.DecodeString(b64)
+	pb, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		appG.Response(http.StatusBadRequest, statuscode.WRITEIOFAILED, nil)
 		return
 	}
-	path_ := string(pathb)
+	path_ := string(pb)
 
 	fileTmp, errByOpenFile := os.Open(path_)
 	if errByOpenFile != nil {
@@ -81,6 +81,26 @@ func Download(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 
 	c.File(path_)
+	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
+	return
+}
+
+func Delete(c *gin.Context) {
+	appG := app.Gin{C: c}
+	b64 := com.StrTo(c.Param("b64")).String()
+	pb, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		appG.Response(http.StatusBadRequest, statuscode.WRITEIOFAILED, nil)
+		return
+	}
+	path_ := string(pb)
+
+	if _, err_ := os.Stat(path_); err_ != nil {
+		// do nothing
+	} else {
+		os.Remove(path_)
+	}
+
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
 	return
 }
