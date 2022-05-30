@@ -109,6 +109,17 @@ func (w *Walker) walkDir(dir string) {
 	}()
 	defer w.wg.Done()
 
+	// 记录目录信息
+	w.pipe <- nt_notify.FileWatchingObj{
+		FileInfo: nt_notify.FileInfo{
+			Time: time.Now().Unix(),
+			Path: dir,
+			Name: filepath.Base(dir),
+			Type: meta.FTDir,
+		},
+		Event: meta.Win32EventFullScan,
+	}
+
 	if w.isStopped() {
 		logger.Fmt.Info("%v.walkDir【终止】", w.String())
 		return

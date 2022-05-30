@@ -2,6 +2,15 @@ package meta
 
 import (
 	"os"
+	"time"
+)
+
+// 任务类型
+type TaskType string
+
+const (
+	TaskTypeBackup  TaskType = "b"
+	TaskTypeRestore TaskType = "r"
 )
 
 // FileType文件类型
@@ -81,3 +90,9 @@ const ServerCtxWin = `C:\rongan\rongan-fnotify\server_ctx.db`
 
 // 备份过程的锁文件目录
 const HandlerBaseDir = `C:\rongan\rongan-fnotify\handles\`
+
+// 文件备份/恢复通道的默认缓冲区大小
+const DefaultDRQueueSize = 100
+
+// 重试间隔时间
+var DefaultRetryTimeInterval = 5 * time.Second

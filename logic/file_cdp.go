@@ -25,104 +25,206 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// 目标存储枚举量
 type TargetType string
 
 const (
-	TTS3   = "s3"
-	TTHost = "host"
-	// TODO more...
+	TTS3   TargetType = "s3"
+	TTHost TargetType = "hostInfo"
 )
 
+type hosts struct {
+	server,
+	origin,
+	target models.ClientInfo
+}
+
+// 全量备份器
+type fullBackupProxy struct {
+	walker      *Walker
+	walkerQueue chan nt_notify.FileWatchingObj
+	fullPool    *ants.Pool
+	fullWG      *sync.WaitGroup
+	fullQueue   chan models.EventFileModel // 全量数据通道，该通道在全量备份完成后关闭
+}
+
+func initFullBackupProxy(poolSize, fullQueueSize int) *fullBackupProxy {
+	fbp := new(fullBackupProxy)
+	fbp.fullPool, _ = ants.NewPool(poolSize)
+	fbp.fullWG = new(sync.WaitGroup)
+	fbp.fullQueue = make(chan models.EventFileModel, fullQueueSize)
+	return fbp
+}
+
+// 增量备份器
+type incrBackupProxy struct {
+	watcher      *nt_notify.Win32Watcher
+	watcherPatch *eventDelayPusher // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
+	watcherQueue chan nt_notify.FileWatchingObj
+	incrPool     *ants.Pool
+	incrWG       *sync.WaitGroup
+	incrQueue    chan models.EventFileModel // 增量数据通道，该通道永久开放
+}
+
+func initIncrBackupProxy(poolSize, incrQueueSize int) *incrBackupProxy {
+	ibp := new(incrBackupProxy)
+	ibp.incrPool, _ = ants.NewPool(poolSize)
+	ibp.incrWG = new(sync.WaitGroup)
+	ibp.incrQueue = make(chan models.EventFileModel, incrQueueSize)
+	ibp.watcherPatch = new(eventDelayPusher)
+	ibp.watcherPatch.m = new(sync.Map)
+	return ibp
+}
+
+// 任务终止事件监视器
+type hangEventMonitor struct {
+	task  interface{}
+	type_ meta.TaskType
+}
+
+func NewMonitorWithBackup(cdp *CDPExecutor) *hangEventMonitor {
+	hem := new(hangEventMonitor)
+	hem.task = cdp
+	hem.type_ = meta.TaskTypeBackup
+	return hem
+}
+
+func NewMonitorWithRestore(restore *RestoreTask) *hangEventMonitor {
+	hem := new(hangEventMonitor)
+	hem.task = restore
+	hem.type_ = meta.TaskTypeRestore
+	return hem
+}
+
+func (h *hangEventMonitor) monitor() {
+	logger.Fmt.Infof("%v.monitor 任务监控器已启动, 正在捕捉中断事件...", h.Str())
+
+	defer func() {
+		logger.Fmt.Infof("%v.monitor【终止】", h.Str())
+	}()
+
+	var (
+		ok  bool
+		err error
+	)
+
+	for {
+		ticker := time.NewTicker(meta.DefaultRetryTimeInterval)
+
+		// TODO 可考虑用任务接口改写...
+		for range ticker.C {
+			if h.type_ == meta.TaskTypeBackup {
+				ok, err = models.IsEnable(
+					h.CDPExecutorObj().DBDriver.DB, h.CDPExecutorObj().confObj.ID)
+			} else if h.type_ == meta.TaskTypeRestore {
+				ok, err = models.IsRestoreCancel(
+					h.RestoreObj().DBDriver.DB, h.RestoreObj().taskObj.ID)
+			}
+
+			if !ok && err == nil {
+				logger.Fmt.Infof("%v.monitor !!!!!!!!!!!!!!!!! 【取消事件】", h.Str())
+				if h.type_ == meta.TaskTypeBackup {
+					h.CDPExecutorObj().exitWhenErr(
+						ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
+				} else if h.type_ == meta.TaskTypeRestore {
+					h.RestoreObj().exitWhenErr(
+						ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
+				}
+			} else if err != nil {
+				logger.Fmt.Infof("%v.monitor !!!!!!!!!!!!!!!!! 【备份服务器连接失败】", h.Str())
+				if h.type_ == meta.TaskTypeBackup {
+					h.CDPExecutorObj().exitWhenErr(
+						ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
+				} else if h.type_ == meta.TaskTypeRestore {
+					h.RestoreObj().exitWhenErr(
+						ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
+				}
+			} else if ok {
+				continue
+			}
+			ticker.Stop()
+		}
+	}
+}
+
+func (h *hangEventMonitor) CDPExecutorObj() *CDPExecutor {
+	c, ok := h.task.(*CDPExecutor)
+	if !ok {
+		panic("failed to convert to CDPExecutorObj")
+	}
+	return c
+}
+
+func (h *hangEventMonitor) RestoreObj() *RestoreTask {
+	r, ok := h.task.(*RestoreTask)
+	if !ok {
+		panic("failed to convert to RestoreTask")
+	}
+	return r
+}
+
+func (h *hangEventMonitor) Str() string {
+	return fmt.Sprintf("%v.<hangEventMonitor-Thread>", h.CDPExecutorObj().Str())
+}
+
+// 目标存储
+type storage struct {
+	type_       TargetType
+	hostInfo    models.TargetHost // 备份目标机存储信息
+	s3Info      models.TargetS3   // 备份目标对象存储信息
+	hostSession string
+	s3Session   *session.Session
+	s3Client    gos3.S3Client
+}
+
 // CDPExecutor 文件级CDP实现
-// 首先文件级CDP的启动流程分为了下述3个状态
-// 状态1：UNSTART（未启动状态）
-// 状态2：COPYING（全量拷贝状态）
-// 状态3：CDPING（持续保护状态）
-//
-// ****UNSTART****
-// 条件:
-// ConfigModel配置中没有对该目录做监控配置或对配置已禁用
-// ****COPYING****
-// 条件:
-// ConfigModel配置中没有对该目录做监控配置，则先进行拷贝目录下所有文件
-// 逻辑说明：
-// 全量拷贝时，该目录下每完成拷贝一个文件，便向FileFlow中写入一个文件记录，
-// 若此时，底层上报有新的文件发生变更，则判断，若该文件还没有完成全量拷贝，则不记录到FileFlow，否则，记录下来
-// ****CDPING****
-// 条件:
-// 将上报的变更的文件上传，并记录到FileFlow
-//
-//
-// 注意！！！！！！！！！！！！！！
-// 在CDPING状态下执行恢复操作，如何处理？？？
-// 恢复时，为恢复文件加上统一的恢复标志，这样一来，即使恢复至原路径，
-// CDPExecutor也能在捕捉变更文件时，忽略掉恢复文件
-// TODO 使用“文件锁”针对目录实现并发互斥
 type CDPExecutor struct {
-	//ctx          context.Context
-	//cancel       context.CancelFunc // 取消事件
-	handler         string
-	locker          *flock.Flock
-	config          *models.ConfigModel
-	dp              *models.DBProxy
-	task            *models.BackupTaskModel
-	incrQueue       chan models.EventFileModel // 增量数据通道，该通道永久开放
-	fullQueue       chan models.EventFileModel // 全量数据通道，该通道在全量备份完成后关闭
-	fullWG          *sync.WaitGroup
-	incrWG          *sync.WaitGroup
-	fullPool        *ants.Pool
-	incrPool        *ants.Pool
-	isReload        bool // 当服务重启时，此属性为True
-	targetType      TargetType
-	server          models.ClientInfo // 备份服务器信息
-	origin          models.ClientInfo // 备份源机信息
-	target          models.ClientInfo // 备份目标机
-	storageHost     models.TargetHost // 备份目标机存储信息
-	storageS3       models.TargetS3   // 备份目标对象存储信息
-	hostSession     string
-	grep            *Grep
-	s3Session       *session.Session
-	s3Client        gos3.S3Client
-	watcher         *nt_notify.Win32Watcher
-	watcherQueue    chan nt_notify.FileWatchingObj
-	walker          *Walker
-	walkerQueue     chan nt_notify.FileWatchingObj
-	startTs         int64
-	stopNotify      *int32         // 用户禁用/取消信号、异常终止信号
-	lastEventPusher *Recorder      // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
-	localCtxDB      *bolt.DB       // 本地用于记录服务关键信息的文件数据库
-	exitNotify      chan ErrorCode // 异常记录
-	exitNotifyOnce  *sync.Once     // 多线程环境下仅报告一次异常记录
+	isReload      bool  // 当服务重启时，此属性为True
+	startTs       int64 // 本次持续备份的开始时间
+	handle        string
+	hosts         *hosts
+	taskLocker    *flock.Flock
+	DBDriver      *models.DBProxy
+	confObj       *models.ConfigModel
+	taskObj       *models.BackupTaskModel
+	filter        *Grep
+	fbp           *fullBackupProxy
+	ibp           *incrBackupProxy
+	storage       *storage
+	monitor       *hangEventMonitor
+	hangSignal    *int32         // 用户禁用/取消信号、异常终止信号
+	notifyErr     chan ErrorCode // 异常记录
+	notifyErrOnce *sync.Once     // 多线程环境下仅报告一次异常记录
+	localCtxDB    *bolt.DB       // TODO 本地用于记录服务关键信息的文件数据库
 }
 
 func initOrResetCDPExecutor(ce *CDPExecutor, config *models.ConfigModel, dp *models.DBProxy) (err error) {
-	ce.config = config
-	ce.dp = dp
+	ce.confObj = config
+	ce.DBDriver = dp
 
-	ce.incrQueue = make(chan models.EventFileModel, meta.BackupChanSize)
-	ce.fullQueue = make(chan models.EventFileModel, meta.BackupChanSize)
-	ce.fullWG = &sync.WaitGroup{}
-	ce.incrWG = &sync.WaitGroup{}
-	//ce.ctx, ce.cancel = context.WithCancel(context.Background())
+	numCores := int(config.Cores)
+	if numCores < 0 {
+		numCores = runtime.NumCPU()
+	}
 
-	ce.stopNotify = new(int32)
-	ce.lastEventPusher = new(Recorder)
-	ce.lastEventPusher.m = new(sync.Map)
+	ce.fbp = initFullBackupProxy(numCores, meta.DefaultDRQueueSize)
+	ce.ibp = initIncrBackupProxy(numCores, meta.DefaultDRQueueSize)
+
+	ce.hosts = new(hosts)
+	ce.storage = new(storage)
 	ce.startTs = time.Now().Unix()
-	ce.exitNotify = make(chan ErrorCode)
-	ce.exitNotifyOnce = new(sync.Once)
+	ce.monitor = NewMonitorWithBackup(ce)
 
-	//ce.localCtxDB, err = bolt.Open(meta.ServerCtxWin, 0666, nil)
-	//if err != nil {
-	//	logger.Fmt.Errorf("NewCDPExecutor. bolt.Open ERR=%v", err)
-	//	return
-	//}
+	ce.hangSignal = new(int32)
+	ce.notifyErr = make(chan ErrorCode)
+	ce.notifyErrOnce = new(sync.Once)
 	return nil
 }
 
@@ -147,7 +249,7 @@ func NewCDPExecutorWhenReload(config *models.ConfigModel, dp *models.DBProxy) (c
 		return
 	}
 
-	ce.task = &task
+	ce.taskObj = &task
 	ce.isReload = true
 	logger.Fmt.Infof("NewCDPExecutor. 重启CDP执行器(conf=%v)完成，等待系统调度", config.ID)
 	return
@@ -201,7 +303,25 @@ func AsyncStartCDPExecutor(ip string, conf int64, reload bool) (err error) {
 }
 
 func (c *CDPExecutor) Str() string {
-	return fmt.Sprintf("<CDP(conf=%v, task=%v, dir=%v)>", c.config.ID, c.task.ID, c.config.Dir)
+	return fmt.Sprintf("<CDP(conf=%v, taskObj=%v, dir=%v)>", c.confObj.ID, c.taskObj.ID, c.confObj.Dir)
+}
+
+func (c *CDPExecutor) registerShardingModel() (err error) {
+	if err = c.DBDriver.RegisterEventFileModel(c.confObj.ID); err != nil {
+		logger.Fmt.Errorf("%v.StartWithRetry RegisterEventFileModel ERR=%v", c.Str(), err)
+		return
+	}
+	if err = c.DBDriver.RegisterEventDirModel(c.confObj.ID); err != nil {
+		logger.Fmt.Errorf("%v.StartWithRetry RegisterEventDirModel ERR=%v", c.Str(), err)
+		return
+	}
+	return nil
+}
+
+func (c *CDPExecutor) inRetryErr(ec ErrorCode) bool {
+	return ec == ExitErrCodeUserCancel ||
+		ec == ExitErrCodeTaskReplicate ||
+		ec == ExitErrCodeLackHandler
 }
 
 func (c *CDPExecutor) StartWithRetry() (err error) {
@@ -211,59 +331,53 @@ func (c *CDPExecutor) StartWithRetry() (err error) {
 		}
 	}
 
-	if err = c.dp.RegisterEventFileModel(c.config.ID); err != nil {
-		logger.Fmt.Errorf("%v.Start RegisterEventFileModel ERR=%v", c.Str(), err)
-		return
-	}
-	if err = c.dp.RegisterEventDirModel(c.config.ID); err != nil {
-		logger.Fmt.Errorf("%v.Start RegisterEventDirModel ERR=%v", c.Str(), err)
+	if err = c.registerShardingModel(); err != nil {
 		return
 	}
 
 	// 无限重试
 	go func() {
 		for {
-			sa := new(models.ServerAddress)
-			if err = json.Unmarshal([]byte(c.config.ExtInfo), &sa); err != nil {
-				logger.Fmt.Warnf("%v retry failed. parse ip ERR=%v", c.Str(), err)
+			ce, err := c.confObj.Ext()
+			if err != nil {
+				logger.Fmt.Warnf("%v retry failed. parse server-ip ERR=%v", c.Str(), err)
 				break
 			}
-			if c.dp, err = models.NewDBProxy(sa.ServerAddress); err != nil {
+			if c.DBDriver, err = models.NewDBProxy(ce.ServerAddress); err != nil {
+				logger.Fmt.Infof("%v.StartWithRetry failed to retry. will sleep 5s...", c.Str())
 				// do nothing
 			} else {
-				ec := c.Start()
-				if ec == ExitErrCodeUserCancel ||
-					ec == ExitErrCodeTaskReplicate ||
-					ec == ExitErrCodeLackHandler {
+				logger.Fmt.Infof("%v.StartWithRetry 正在拉起任务...", c.Str())
+				if c.inRetryErr(c.Start()) {
 					break
 				}
 			}
-			time.Sleep(5 * time.Second)
+			time.Sleep(meta.DefaultRetryTimeInterval)
 		}
 	}()
 	return nil
 }
 
 func (c *CDPExecutor) Start() (ec ErrorCode) {
-	if err := c.bindHandler(); err != nil {
+	if err := c.mallocHandle(); err != nil {
 		return ExitErrCodeLackHandler
 	}
-	logger.Fmt.Infof("%v.Start 成功分配任务执行句柄%v", c.Str(), c.handler)
+	logger.Fmt.Infof("%v.Start 成功分配任务执行句柄%v", c.Str(), c.handle)
 
-	locked, err := c.locker.TryLock()
+	locked, err := c.taskLocker.TryLock()
 	if err != nil {
 		logger.Fmt.Errorf("%v.StartWithRetry TryLock ERR=%v", c.Str(), err)
 		return ExitErrCodeTaskReplicate
 	}
-	logger.Fmt.Infof("%v.Start 成功锁定句柄%v", c.Str(), c.handler)
+	logger.Fmt.Infof("%v.Start 成功锁定句柄%v", c.Str(), c.handle)
 
 	if locked {
 		defer func() {
-			if err = c.locker.Unlock(); err != nil {
+			if err = c.taskLocker.Unlock(); err != nil {
 				logger.Fmt.Errorf("%v.StartWithRetry UnLock ERR=%v", c.Str(), err)
-				logger.Fmt.Errorf("%v.Start 解锁句柄失败%v", c.Str(), c.handler)
+				logger.Fmt.Errorf("%v.Start 解锁句柄失败%v", c.Str(), c.handle)
 			} else {
-				logger.Fmt.Infof("%v.Start 成功解锁句柄%v", c.Str(), c.handler)
+				logger.Fmt.Infof("%v.Start 成功解锁句柄%v", c.Str(), c.handle)
 			}
 		}()
 	}
@@ -271,74 +385,58 @@ func (c *CDPExecutor) Start() (ec ErrorCode) {
 	go c.monitorStopNotify()
 	go c.logic()
 
-	// 一直阻塞到有退出通知为止
-	ec = <-c.exitNotify
+	// 阻塞到有退出信号为止
+	ec = <-c.notifyErr
 	logger.Fmt.Infof("%v.Start CDP执行器发生【%v】, 正在重试...请稍后", c.Str(), ErrByCode(ec))
 	if ec == ExitErrCodeUserCancel {
 		return
 	}
 
 	// 重置CDPExecutor
-	address := c.server.Address
-	if err := initOrResetCDPExecutor(c, c.config, c.dp); err != nil {
+	address := c.hosts.server.Address
+	if err := initOrResetCDPExecutor(c, c.confObj, c.DBDriver); err != nil {
 		return
 	}
 	c.isReload = true
-	c.server.Address = address
+	c.hosts.server.Address = address
 	logger.Fmt.Infof("%v.initOrResetCDPExecutor 重置完成", c.Str())
 	return
 }
 
-func (c *CDPExecutor) bindHandler() (err error) {
-	if c.handler, err = c.fetchHandler(); err != nil {
-		logger.Fmt.Errorf("%v.bindHandler ERR=%v", c.Str(), err)
+func (c *CDPExecutor) mallocHandle() (err error) {
+	if c.handle, err = c.createHandle(); err != nil {
+		logger.Fmt.Errorf("%v.mallocHandle ERR=%v", c.Str(), err)
 		return
 	}
-	c.locker = flock.New(c.handlerPath(c.handler))
+	c.taskLocker = flock.New(c.handlePath(c.handle))
 	return nil
 }
 
 func (c *CDPExecutor) isStopped() bool {
-	return atomic.LoadInt32(c.stopNotify) == 1
+	return atomic.LoadInt32(c.hangSignal) == 1
 }
 
 func (c *CDPExecutor) monitorStopNotify() {
-	logger.Fmt.Infof("%v.monitorStopNotify 监控线程已启动, 正在持续捕捉CDP中断事件...", c.Str())
-
-	defer func() {
-		logger.Fmt.Infof("%v.monitorStopNotify【终止】", c.Str())
+	go func() {
+		c.monitor.monitor()
 	}()
-
-	for {
-		ticker := time.NewTicker(5 * time.Second)
-		for range ticker.C {
-			ok, err := models.IsEnable(c.dp.DB, c.config.ID)
-			if !ok && err == nil {
-				logger.Fmt.Infof("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【取消事件】", c.Str())
-				c.exitWhenErr(ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
-			} else if err != nil {
-				logger.Fmt.Infof("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【备份服务器连接失败】", c.Str())
-				c.exitWhenErr(ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
-			} else if ok {
-				continue
-			}
-			ticker.Stop()
-		}
-	}
 }
 
 func (c *CDPExecutor) stop() {
-	logger.Fmt.Infof("%v.stop 正在停止CDP执行器", c.Str())
-
+	logger.Fmt.Infof("%v.stop 正在停止CDP执行器...", c.Str())
 	if c.isStopped() {
 		return
 	}
-	atomic.StoreInt32(c.stopNotify, 1)
-	if c.walker != nil {
-		c.walker.SetStop()
+	atomic.StoreInt32(c.hangSignal, 1)
+	c.stopBackupProxy()
+}
+
+func (c *CDPExecutor) stopBackupProxy() {
+	if c.fbp.walker != nil {
+		c.fbp.walker.SetStop()
 	}
-	if c.watcher != nil {
-		c.watcher.SetStop()
+	if c.ibp.watcher != nil {
+		c.ibp.watcher.SetStop()
 	}
 }
 
@@ -346,8 +444,8 @@ func (c *CDPExecutor) logic() {
 	logger.Fmt.Infof("%v.monitorStopNotify 开始执行核心逻辑", c.Str())
 
 	var err error
-	if err = c.initArgs(); err != nil {
-		logger.Fmt.Errorf("%v.logic initArgs err=%v", c.Str(), err)
+	if err = c.moreInit(); err != nil {
+		logger.Fmt.Errorf("%v.logic moreInit err=%v", c.Str(), err)
 		return
 	}
 	logger.Fmt.Infof("%v.monitorStopNotify 初始化环境参数完成", c.Str())
@@ -358,7 +456,7 @@ func (c *CDPExecutor) logic() {
 	2. 执行新任务（远程调用）
 	*/
 
-	if err = models.DeleteNotUploadFileFlows(c.dp.DB, c.config.ID); err != nil {
+	if err = models.DeleteNotUploadFileFlows(c.DBDriver.DB, c.confObj.ID); err != nil {
 		return
 	}
 	logger.Fmt.Infof("%v.monitorStopNotify 清理过期事件完成", c.Str())
@@ -377,7 +475,7 @@ func (c *CDPExecutor) logic() {
 }
 
 func (c *CDPExecutor) logicWhenReload() (err error) {
-	logger.Fmt.Infof("%v.logicWhenReload【%v】重载任务 -> 全量(未完成同步的)+增量", c.Str(), c.task.Status)
+	logger.Fmt.Infof("%v.logicWhenReload【%v】重载任务 -> 全量(未完成同步的)+增量", c.Str(), c.taskObj.Status)
 	c.full()
 	c.incr()
 	return nil
@@ -385,8 +483,8 @@ func (c *CDPExecutor) logicWhenReload() (err error) {
 
 func (c *CDPExecutor) logicWhenNormal() (err error) {
 	// 历史任务处于meta.CDPUNSTART或meta.CDPCOPYING状态时，需执行全量+增量
-	if c.task.Status == meta.CDPUNSTART || c.task.Status == meta.CDPCOPYING {
-		if err = models.UpdateBackupTaskStatusByConfID(c.dp.DB, c.config.ID, meta.CDPCOPYING); err != nil {
+	if c.taskObj.Status == meta.CDPUNSTART || c.taskObj.Status == meta.CDPCOPYING {
+		if err = models.UpdateBackupTaskStatusByConfID(c.DBDriver.DB, c.confObj.ID, meta.CDPCOPYING); err != nil {
 			return
 		}
 		logger.Fmt.Infof("%v.logicWhenNormal【COPYING】-> 全量(未完成同步的)+增量", c.Str())
@@ -396,11 +494,11 @@ func (c *CDPExecutor) logicWhenNormal() (err error) {
 	}
 
 	// 历史任务处于meta.CDPCDPING状态，且表记录为空时，需执行全量+增量（此分支仅用于调试环境做测试时出现）
-	if c.task.Status == meta.CDPCDPING && models.IsEmptyTable(c.dp.DB, c.config.ID) {
-		if err = models.UpdateBackupTaskStatusByConfID(c.dp.DB, c.config.ID, meta.CDPCOPYING); err != nil {
+	if c.taskObj.Status == meta.CDPCDPING && models.IsEmptyTable(c.DBDriver.DB, c.confObj.ID) {
+		if err = models.UpdateBackupTaskStatusByConfID(c.DBDriver.DB, c.confObj.ID, meta.CDPCOPYING); err != nil {
 			return
 		}
-		logger.Fmt.Warnf("%v.logicWhenNormal convert status from `%v` to `COPYING`", c.Str(), c.task.Status)
+		logger.Fmt.Warnf("%v.logicWhenNormal convert status from `%v` to `COPYING`", c.Str(), c.taskObj.Status)
 		logger.Fmt.Infof("%v.logicWhenNormal【COPYING】--> 全量(未完成同步的)+增量", c.Str())
 		c.full()
 		c.incr()
@@ -408,93 +506,86 @@ func (c *CDPExecutor) logicWhenNormal() (err error) {
 	}
 
 	// 历历史任务处于meta.CDPCDPING状态，且表记录不为空时，仅执行增量即可
-	if c.task.Status == meta.CDPCDPING && !models.IsEmptyTable(c.dp.DB, c.config.ID) {
-		logger.Fmt.Infof("%v.logicWhenNormal【%v】--> 增量", c.Str(), c.task.Status)
-		close(c.fullQueue)
+	if c.taskObj.Status == meta.CDPCDPING && !models.IsEmptyTable(c.DBDriver.DB, c.confObj.ID) {
+		logger.Fmt.Infof("%v.logicWhenNormal【%v】--> 增量", c.Str(), c.taskObj.Status)
+		close(c.fbp.fullQueue)
 		logger.Fmt.Infof("%v.logicWhenNormal close FullQueue", c.Str())
 		c.incr()
 		return nil
 	}
 
-	logger.Fmt.Errorf("%v.logicWhenNormal error status=%v", c.Str(), c.task.Status)
-	panic("undefined task status")
+	logger.Fmt.Errorf("%v.logicWhenNormal error status=%v", c.Str(), c.taskObj.Status)
+	panic("undefined taskObj status")
 }
 
-func (c *CDPExecutor) initArgs() (err error) {
+func (c *CDPExecutor) moreInit() (err error) {
 	// 黑白名单过滤
-	c.grep = NewGrep(c.config.Include, c.config.Exclude)
+	c.filter = NewGrep(c.confObj.Include, c.confObj.Exclude)
 
 	// 备份服务器信息
-	if c.server, err = models.QueryHostInfoByHostID(c.dp.DB, c.config.Server); err != nil {
+	c.hosts.server, err = models.QueryHostInfoByHostID(c.DBDriver.DB, c.confObj.Server)
+	if err != nil {
 		return
 	}
-	logger.Fmt.Infof("%v.initArgs server ->%v", c.Str(), c.server)
+	logger.Fmt.Infof("%v.moreInit server ->%v", c.Str(), c.hosts.server)
 
 	// 源机信息
-	if c.origin, err = models.QueryHostInfoByHostID(c.dp.DB, c.config.Origin); err != nil {
+	c.hosts.origin, err = models.QueryHostInfoByHostID(c.DBDriver.DB, c.confObj.Origin)
+	if err != nil {
 		return
 	}
-	logger.Fmt.Infof("%v.initArgs origin ->%v", c.Str(), c.origin)
+	logger.Fmt.Infof("%v.moreInit origin ->%v", c.Str(), c.hosts.origin)
 
-	if models.Is2Host(*c.config) {
+	if models.Is2Host(*c.confObj) {
 		// 目标机信息
-		if c.target, err = models.QueryTargetHostInfoByConf(c.dp.DB, c.config.ID); err != nil {
+		c.hosts.target, err = models.QueryTargetHostInfoByConf(c.DBDriver.DB, c.confObj.ID)
+		if err != nil {
 			return
 		}
-		logger.Fmt.Infof("%v.initArgs 2h TargetHost ->%v", c.Str(), c.target)
+		logger.Fmt.Infof("%v.moreInit 2h TargetHost ->%v", c.Str(), c.hosts.target)
 
 		// 目标机目标存储路径
-		if c.storageHost, err = models.QueryTargetConfHostByConf(c.dp.DB, c.config.ID); err != nil {
+		c.storage.hostInfo, err = models.QueryTargetConfHostByConf(c.DBDriver.DB, c.confObj.ID)
+		if err != nil {
 			return
 		}
-		logger.Fmt.Infof("%v.initArgs 2h TargetConf ->%v", c.Str(), c.storageHost)
+		logger.Fmt.Infof("%v.moreInit 2h TargetConf ->%v", c.Str(), c.storage.hostInfo)
 
 		// 目标机上传接口地址
-		c.hostSession = fmt.Sprintf("http://%s:%v/api/v1/upload", c.target.Address, meta.AppPort)
-		logger.Fmt.Infof("%v.initArgs 2h UploadSession ->%v", c.Str(), c.hostSession)
-		c.targetType = TTHost
+		c.storage.hostSession = fmt.Sprintf(
+			"http://%s:%v/api/v1/upload", c.hosts.target.Address, meta.AppPort)
+		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.hostSession)
+		c.storage.type_ = TTHost
+	} else if models.Is2S3(*c.confObj) {
 
-	} else if models.Is2S3(*c.config) {
 		// 目标对象存储相关配置
-		if c.storageS3, err = models.QueryTargetConfS3ByConf(c.dp.DB, c.config.ID); err != nil {
+		c.storage.s3Info, err = models.QueryTargetConfS3ByConf(c.DBDriver.DB, c.confObj.ID)
+		if err != nil {
 			return
 		}
-		logger.Fmt.Infof("%v.initArgs 2s3 TargetS3Conf ->%v", c.Str(), c.storageS3)
+		logger.Fmt.Infof("%v.moreInit 2s3 TargetS3Conf ->%v", c.Str(), c.storage.s3Info)
 
 		// 创建目标对象存储目标桶
-		c.s3Session, c.s3Client = tools.NewS3Client(
-			c.storageS3.TargetConfS3.AccessKey,
-			c.storageS3.TargetConfS3.SecretKey,
-			c.storageS3.TargetConfS3.Endpoint,
-			c.storageS3.TargetConfS3.Region,
-			c.storageS3.TargetConfS3.SSL,
-			c.storageS3.TargetConfS3.Path)
-		c.targetType = TTS3
-		if err = c.createBucket(c.storageS3.TargetConfS3.Bucket); err != nil {
+		c.storage.s3Session, c.storage.s3Client = tools.NewS3Client(
+			c.storage.s3Info.TargetConfS3.AccessKey,
+			c.storage.s3Info.TargetConfS3.SecretKey,
+			c.storage.s3Info.TargetConfS3.Endpoint,
+			c.storage.s3Info.TargetConfS3.Region,
+			c.storage.s3Info.TargetConfS3.SSL,
+			c.storage.s3Info.TargetConfS3.Path)
+		c.storage.type_ = TTS3
+		if err = c.createBucket(c.storage.s3Info.TargetConfS3.Bucket); err != nil {
 			return
 		}
-
 	} else {
-		return fmt.Errorf("unsupported config-target(%v)", c.config.Target)
+		return fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
 	}
-
-	// 初始化备份线程池
-	if c.fullPool, err = NewPoolWithCores(int(c.config.Cores)); err != nil {
-		logger.Fmt.Errorf("%v.initArgs NewFullPool ERR=%v", c.Str(), err)
-		return
-	}
-	if c.incrPool, err = NewPoolWithCores(int(c.config.Cores)); err != nil {
-		logger.Fmt.Errorf("%v.initArgs NewIncrPool ERR=%v", c.Str(), err)
-		return
-	}
-
-	// TODO more... 更多的初始化参数操作
 	return nil
 }
 
 func (c *CDPExecutor) createBucket(bucket string) (err error) {
 
-	_, err = c.s3Client.Client.HeadBucket(&s3.HeadBucketInput{
+	_, err = c.storage.s3Client.Client.HeadBucket(&s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err == nil { // existed
@@ -502,7 +593,7 @@ func (c *CDPExecutor) createBucket(bucket string) (err error) {
 		return
 	}
 
-	_, err = c.s3Client.Client.CreateBucket(&s3.CreateBucketInput{
+	_, err = c.storage.s3Client.Client.CreateBucket(&s3.CreateBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -510,7 +601,7 @@ func (c *CDPExecutor) createBucket(bucket string) (err error) {
 		return err
 	}
 
-	err = c.s3Client.Client.WaitUntilBucketExists(&s3.HeadBucketInput{
+	err = c.storage.s3Client.Client.WaitUntilBucketExists(&s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -523,11 +614,11 @@ func (c *CDPExecutor) createBucket(bucket string) (err error) {
 }
 
 func (c *CDPExecutor) is2s3() bool {
-	return c.targetType == TTS3
+	return c.storage.type_ == TTS3
 }
 
 func (c *CDPExecutor) is2host() bool {
-	return c.targetType == TTHost
+	return c.storage.type_ == TTHost
 }
 
 func (c *CDPExecutor) uploadQueue2Storage() {
@@ -548,22 +639,24 @@ func (c *CDPExecutor) uploadIncrQueue() {
 func (c *CDPExecutor) uploadDispatcher(full bool) {
 	var (
 		err   error
-		wg    = c.incrWG
-		queue = c.incrQueue
-		pool  = c.incrPool
+		wg    = c.ibp.incrWG
+		queue = c.ibp.incrQueue
+		pool  = c.ibp.incrPool
 	)
-	defer c.catchErr(err)
-	defer func() {
-		logger.Fmt.Infof("%v.uploadDispatcher(FULL %v)【终止】", c.Str(), full)
-	}()
 
 	if full {
-		queue = c.fullQueue
-		pool = c.fullPool
+		wg = c.fbp.fullWG
+		queue = c.fbp.fullQueue
+		pool = c.fbp.fullPool
 		logger.Fmt.Infof("%v.uploadDispatcher consuming fullQueue", c.Str())
 	} else {
 		logger.Fmt.Infof("%v.uploadDispatcher consuming incrQueue", c.Str())
 	}
+
+	defer func() {
+		c.catchErr(err)
+		logger.Fmt.Infof("%v.uploadDispatcher(FULL %v)【终止】", c.Str(), full)
+	}()
 
 	for fwo := range queue {
 		if c.isStopped() {
@@ -592,13 +685,13 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		logger.Fmt.Infof("%v.logic fullWG 退出阻塞状态...", c.Str())
 	}
 
-	err = models.UpdateBackupTaskStatusByConfID(c.dp.DB, c.config.ID, meta.CDPCDPING)
+	err = models.UpdateBackupTaskStatusByConfID(c.DBDriver.DB, c.confObj.ID, meta.CDPCDPING)
 	if err != nil {
 		logger.Fmt.Warnf("%v.uploadDispatcher failed to convert CDPING status, err=%v", c.Str(), err)
 		return
 	}
 
-	logger.Fmt.Infof("%v.uploadDispatcher exit，task(%v) 进入【CDPING】状态", c.Str(), c.task.ID)
+	logger.Fmt.Infof("%v.uploadDispatcher exit，taskObj(%v) 进入【CDPING】状态", c.Str(), c.taskObj.ID)
 }
 
 func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, wg *sync.WaitGroup) (err error) {
@@ -636,12 +729,12 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 	defer func() {
 		if err == nil {
 			if err = models.UpdateFileFlowStatus(
-				c.dp.DB, c.config.ID, ffm.ID, meta.FFStatusFinished); err != nil {
+				c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusFinished); err != nil {
 				logger.Fmt.Warnf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `FINISHED` ERR=%v",
 					c.Str(), ffm.Path, err)
 			}
 		} else {
-			if err = models.UpdateFileFlowStatus(c.dp.DB, c.config.ID, ffm.ID, meta.FFStatusError); err != nil {
+			if err = models.UpdateFileFlowStatus(c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusError); err != nil {
 				logger.Fmt.Warnf(
 					"%v.uploadOneFile UpdateFileFlowStatus (f%v) ERR=%v", c.Str(), ffm.ID, err)
 			}
@@ -649,7 +742,7 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 	}()
 
 	if err = models.UpdateFileFlowStatus(
-		c.dp.DB, c.config.ID, ffm.ID, meta.FFStatusSyncing); err != nil {
+		c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusSyncing); err != nil {
 		logger.Fmt.Warnf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `SYNCING` ERR=%v",
 			c.Str(), ffm.ID, err)
 		return
@@ -661,12 +754,12 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 	}
 	defer fp.Close()
 
-	if models.Is2Host(*c.config) {
+	if models.Is2Host(*c.confObj) {
 		return c.upload2host(ffm, fp)
-	} else if models.Is2S3(*c.config) {
+	} else if models.Is2S3(*c.confObj) {
 		return c.upload2s3(ffm, fp)
 	} else {
-		return fmt.Errorf("unsupported config-target(%v)", c.config.Target)
+		return fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
 	}
 }
 
@@ -683,7 +776,7 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 		return
 	}
 
-	r, _ := http.NewRequest("POST", c.hostSession, body)
+	r, _ := http.NewRequest("POST", c.storage.hostSession, body)
 	// TODO 在发生中断时，立即终止HTTP连接
 
 	r.Header.Add("Content-Type", writer.FormDataContentType())
@@ -704,14 +797,14 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 
 func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err error) {
 	uploader := s3manager.NewUploader(
-		c.s3Session,
+		c.storage.s3Session,
 		func(u *s3manager.Uploader) {
 			u.MaxUploadParts = s3manager.MaxUploadParts
 		},
 	)
 
 	_, err = uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(c.storageS3.TargetConfS3.Bucket),
+		Bucket: aws.String(c.storage.s3Info.TargetConfS3.Bucket),
 		Key:    aws.String(ffm.Storage),
 		Body:   fp,
 	})
@@ -734,21 +827,28 @@ func (c *CDPExecutor) incr() {
 }
 
 func (c *CDPExecutor) scanNotify() {
+	var err error
 	defer func() {
 		logger.Fmt.Infof("%v.scanNotify【终止】", c.Str())
+		c.catchErr(err)
+		close(c.fbp.fullQueue)
 	}()
-
-	var err error
-	defer c.catchErr(err)
-	defer close(c.fullQueue)
 
 	if err = c.startWalker(); err != nil {
 		return
 	}
 
-	for fwo := range c.walkerQueue {
+	for fwo := range c.fbp.walkerQueue {
+		if fwo.Type == meta.FTDir {
+			if fwo.Path == c.confObj.Dir {
+				continue
+			}
+			if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, fwo.Path, ""); err != nil {
+				return
+			}
+			continue
+		}
 		if c.isStopped() {
-			//c.walker.SetStop()
 			return
 		}
 		if err = c.putFile2FullOrIncrQueue(fwo, true); err != nil {
@@ -764,21 +864,21 @@ func (c *CDPExecutor) scanNotify() {
 
 // 由于连续变更的文件集，将其压入incrQueue时，必须是有新的不同的变更记录来驱动last其压入incrQueue
 // 所以，针对最后一个文件变更，由于没有c.WatcherQueue驱动上传，就需要另开一个线程来收尾
-type Recorder struct {
+type eventDelayPusher struct {
 	m *sync.Map
 }
 
-func (r *Recorder) Store(v interface{}) {
+func (r *eventDelayPusher) Store(v interface{}) {
 	r.m.Store("last", v)
 	r.m.Store("update_time", time.Now().Unix())
 }
 
-func (r *Recorder) Del() {
+func (r *eventDelayPusher) Del() {
 	r.m.Delete("last")
 	r.m.Delete("update_time")
 }
 
-func (r *Recorder) Load() (nt_notify.FileWatchingObj, int64, bool) {
+func (r *eventDelayPusher) Load() (nt_notify.FileWatchingObj, int64, bool) {
 	last, ok := r.m.Load("last")
 	if !ok {
 		return nt_notify.FileWatchingObj{}, 0, false
@@ -791,13 +891,12 @@ func (r *Recorder) Load() (nt_notify.FileWatchingObj, int64, bool) {
 }
 
 func (c *CDPExecutor) fsNotify() {
+	var err error
 	defer func() {
 		logger.Fmt.Infof("%v.fsNotify【终止】", c.Str())
+		c.catchErr(err)
+		close(c.ibp.incrQueue)
 	}()
-
-	var err error
-	defer c.catchErr(err)
-	defer close(c.incrQueue)
 
 	if err = c.startWatcher(); err != nil {
 		return
@@ -805,7 +904,7 @@ func (c *CDPExecutor) fsNotify() {
 
 	go c.putFileEventWhenTimeout()
 
-	for fwo := range c.watcherQueue {
+	for fwo := range c.ibp.watcherQueue {
 		if c.isStopped() {
 			//c.watcher.SetStop()
 			return
@@ -831,9 +930,9 @@ func (c *CDPExecutor) fsNotify() {
 		case meta.Win32EventRenameTo:
 			fallthrough
 		case meta.Win32EventUpdate:
-			if last, _, ok := c.lastEventPusher.Load(); !ok {
+			if last, _, ok := c.ibp.watcherPatch.Load(); !ok {
 				last = fwo
-				c.lastEventPusher.Store(fwo)
+				c.ibp.watcherPatch.Store(fwo)
 				break
 			} else {
 				// 捕捉到新的不同名文件的变更记录
@@ -842,9 +941,9 @@ func (c *CDPExecutor) fsNotify() {
 					if err != nil {
 						return
 					}
-					c.lastEventPusher.Store(fwo) // 用新文件覆盖掉旧文件记录
+					c.ibp.watcherPatch.Store(fwo) // 用新文件覆盖掉旧文件记录
 				} else {
-					c.lastEventPusher.Store(fwo) // 更新Event
+					c.ibp.watcherPatch.Store(fwo) // 更新Event
 				}
 			}
 		}
@@ -858,21 +957,21 @@ func (c *CDPExecutor) fsNotify() {
 func (c *CDPExecutor) startWalker() (err error) {
 	logger.Fmt.Infof("%v.startWalker start walker...", c.Str())
 
-	if err = models.UpdateBackupTaskStatusByConfID(c.dp.DB, c.config.ID, meta.CDPCOPYING); err != nil {
+	if err = models.UpdateBackupTaskStatusByConfID(c.DBDriver.DB, c.confObj.ID, meta.CDPCOPYING); err != nil {
 		logger.Fmt.Errorf("%v.scanNotify UpdateBackupTaskStatusByConfID err=%v", c.Str(), err)
 		return
 	}
 
-	c.walker = NewWalker(
-		c.config.Dir,
-		int(c.config.Depth),
-		int(c.config.Cores),
-		c.config.Include,
-		c.config.Exclude,
-		*c.task.Start,
-		int(c.config.ValidDays))
+	c.fbp.walker = NewWalker(
+		c.confObj.Dir,
+		int(c.confObj.Depth),
+		int(c.confObj.Cores),
+		c.confObj.Include,
+		c.confObj.Exclude,
+		*c.taskObj.Start,
+		int(c.confObj.ValidDays))
 
-	c.walkerQueue, err = c.walker.Walk()
+	c.fbp.walkerQueue, err = c.fbp.walker.Walk()
 	if err != nil {
 		logger.Fmt.Errorf("%v.scanNotify Walk Error=%s", c.Str(), err.Error())
 		return
@@ -883,19 +982,19 @@ func (c *CDPExecutor) startWalker() (err error) {
 func (c *CDPExecutor) startWatcher() (err error) {
 	logger.Fmt.Infof("%v.startWatcher start watcher...", c.Str())
 
-	c.watcher, err = nt_notify.NewWatcher(c.config.Dir, c.config.Recursion)
+	c.ibp.watcher, err = nt_notify.NewWatcher(c.confObj.Dir, c.confObj.Recursion)
 	if err != nil {
 		logger.Fmt.Errorf("%v.fsNotify NewWatcher Error=%s", c.Str(), err.Error())
 		return
 	}
-	logger.Fmt.Infof("%v.fsNotify init watcher(%v) is ok", c.Str(), c.config.Dir)
+	logger.Fmt.Infof("%v.fsNotify init watcher(%v) is ok", c.Str(), c.confObj.Dir)
 
-	c.watcherQueue, err = c.watcher.Start()
+	c.ibp.watcherQueue, err = c.ibp.watcher.Start()
 	if err != nil {
 		logger.Fmt.Errorf("%v.fsNotify StartWithRetry Error=%s", c.Str(), err.Error())
 		return
 	}
-	logger.Fmt.Infof("%v.fsNotify start watcher(%v)...", c.Str(), c.config.Dir)
+	logger.Fmt.Infof("%v.fsNotify start watcher(%v)...", c.Str(), c.confObj.Dir)
 	return
 }
 
@@ -903,7 +1002,7 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 	if strings.Contains(fwo.Name, meta.IgnoreFlag) {
 		return
 	}
-	fh, err := models.QueryLastSameNameFile(c.dp.DB, c.config.ID, fwo.Path)
+	fh, err := models.QueryLastSameNameFile(c.DBDriver.DB, c.confObj.ID, fwo.Path)
 	if err != nil {
 		return err
 	}
@@ -970,11 +1069,11 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 			return nil
 		}
 		logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Path)
-		c.watcherQueue <- fwo
+		c.ibp.watcherQueue <- fwo
 	}
 
 	// 记录事件至DB和Queue
-	if err = models.CreateDirIfNotExists(c.dp.DB, c.config.ID, filepath.Dir(fwo.Path), ""); err != nil {
+	if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, filepath.Dir(fwo.Path), ""); err != nil {
 		logger.Fmt.Errorf("%v.fsNotify CreateDirIfNotExists Error=%s", c.Str(), err.Error())
 		return
 	}
@@ -984,21 +1083,21 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(fwo nt_notify.FileWatchingObj, ful
 		return err
 	}
 	if !full {
-		c.incrQueue <- fm
+		c.ibp.incrQueue <- fm
 	} else {
-		c.fullQueue <- fm
+		c.fbp.fullQueue <- fm
 	}
 	return
 }
 
 func (c *CDPExecutor) isValidPath(path string, mtime int64) bool {
-	if c.config.Depth != -1 && int64(strings.Count(filepath.Dir(path), meta.Sep)) > c.config.Depth {
+	if c.confObj.Depth != -1 && int64(strings.Count(filepath.Dir(path), meta.Sep)) > c.confObj.Depth {
 		return false
 	}
-	if !c.grep.IsValidByGrep(path) {
+	if !c.filter.IsValidByGrep(path) {
 		return false
 	}
-	if c.config.ValidDays != -1 && mtime+24*60*60*c.config.ValidDays > c.task.Start.Unix() {
+	if c.confObj.ValidDays != -1 && mtime+24*60*60*c.confObj.ValidDays > c.taskObj.Start.Unix() {
 		return false
 	}
 	return true
@@ -1012,18 +1111,18 @@ func (c *CDPExecutor) initTaskOnce() (err error) {
 		}
 	}()
 
-	c_, err := models.QueryBackupTaskByConfID(c.dp.DB, c.config.ID)
+	c_, err := models.QueryBackupTaskByConfID(c.DBDriver.DB, c.confObj.ID)
 	if err == nil {
-		c.task = &c_
+		c.taskObj = &c_
 		return nil
 	}
 
 	_time := time.Now()
-	c.task = new(models.BackupTaskModel)
-	c.task.Start = &_time
-	c.task.Trigger = meta.TriggerMan
-	c.task.ConfID = c.config.ID
-	c.task.Status = meta.CDPUNSTART
+	c.taskObj = new(models.BackupTaskModel)
+	c.taskObj.Start = &_time
+	c.taskObj.Trigger = meta.TriggerMan
+	c.taskObj.ConfID = c.confObj.ID
+	c.taskObj.Status = meta.CDPUNSTART
 
 	hb, err = uuid.NewV4()
 	if err != nil {
@@ -1035,44 +1134,44 @@ func (c *CDPExecutor) initTaskOnce() (err error) {
 	if err != nil {
 		return err
 	}
-	c.task.ExtInfo = string(tes)
-	return models.CreateBackupTaskModel(c.dp.DB, c.task)
+	c.taskObj.ExtInfo = string(tes)
+	return models.CreateBackupTaskModel(c.DBDriver.DB, c.taskObj)
 }
 
 func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models.EventFileModel, err error) {
 	ff := new(models.EventFileModel)
 	ff.Event = meta.EventCode[e.Event]
 	ff.Create = time.Now().Unix()
-	ff.ConfID = c.config.ID
+	ff.ConfID = c.confObj.ID
 	ff.Time = e.Time
 	ff.Mode = int(e.Mode)
 	ff.Size = e.Size
 	ff.Path, _ = filepath.Abs(e.Path)
 	ff.Name = filepath.Base(e.Path)
-	ff.Version = nt_notify.GenerateVersion(c.config.ID, e)
+	ff.Version = nt_notify.GenerateVersion(c.confObj.ID, e)
 	ff.Type = int(e.Type)
 	ff.Status = meta.FFStatusWatched
 	ff.Parent = tools.CorrectDirWithPlatform(filepath.Dir(e.Path), meta.IsWin)
 
 	// 捕捉到已存在文件的变更通知，则为其加入"版本标记"
-	if models.ExistedHistoryVersionFile(c.dp.DB, c.config.ID, ff.Path) {
+	if models.ExistedHistoryVersionFile(c.DBDriver.DB, c.confObj.ID, ff.Path) {
 		ff.Tag = tools.ConvertModTime2VersionFlag(e.Time)
 		ff.Name += "." + ff.Tag
 	}
-	d, err := models.QueryDirByPath(c.dp.DB, c.config.ID, ff.Parent)
+	d, err := models.QueryDirByPath(c.DBDriver.DB, c.confObj.ID, ff.Parent)
 	if err != nil {
 		return fm, err
 	}
 
-	switch c.targetType {
+	switch c.storage.type_ {
 	case TTHost:
-		ff.Storage = tools.GenerateRemoteHostKey(c.config.ID, d.ID,
-			c.storageHost.TargetConfHost.RemotePath, tools.IsWin(c.target.Type))
+		ff.Storage = tools.GenerateRemoteHostKey(c.confObj.ID, d.ID,
+			c.storage.hostInfo.TargetConfHost.RemotePath, tools.IsWin(c.hosts.target.Type))
 	case TTS3:
-		ff.Storage = tools.GenerateS3Key(c.config.ID, d.ID)
+		ff.Storage = tools.GenerateS3Key(c.confObj.ID, d.ID)
 	}
 
-	err = models.CreateFileFlowModel(c.dp.DB, c.config.ID, ff)
+	err = models.CreateFileFlowModel(c.DBDriver.DB, c.confObj.ID, ff)
 	return *ff, err
 }
 
@@ -1080,24 +1179,24 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 	logger.Fmt.Infof("%v.putFileEventWhenTimeout start...", c.Str())
 
 	go func() {
-		defer func() {
-			logger.Fmt.Infof("%v.putFileEventWhenTimeout【终止】", c.Str())
-		}()
-
 		var (
 			err error
 			fwo nt_notify.FileWatchingObj
 			t   int64
 			ok  bool
 		)
-		defer c.catchErr(err)
+
+		defer func() {
+			logger.Fmt.Infof("%v.putFileEventWhenTimeout【终止】", c.Str())
+			c.catchErr(err)
+		}()
 
 		for {
 			if c.isStopped() {
 				return
 			}
 			time.Sleep(5 * time.Second)
-			if fwo, t, ok = c.lastEventPusher.Load(); !ok {
+			if fwo, t, ok = c.ibp.watcherPatch.Load(); !ok {
 				continue
 			}
 
@@ -1107,7 +1206,7 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 						c.Str(), err)
 					return
 				}
-				c.lastEventPusher.Del()
+				c.ibp.watcherPatch.Del()
 			}
 		}
 	}()
@@ -1118,10 +1217,10 @@ func (c *CDPExecutor) exitWhenErr(code ErrorCode, err error) {
 		return
 	}
 
-	c.exitNotifyOnce.Do(func() {
+	c.notifyErrOnce.Do(func() {
 		logger.Fmt.Errorf("%v.exitWhenErr 捕捉到%v, CDP执行器等待退出...",
 			c.Str(), ExtendErr(code, err.Error()))
-		c.exitNotify <- code
+		c.notifyErr <- code
 		c.stop()
 	})
 }
@@ -1132,13 +1231,13 @@ func (c *CDPExecutor) catchErr(err error) {
 	}
 }
 
-func (c *CDPExecutor) fetchHandler() (handler string, err error) {
-	tex, err := c.task.BackupExtInfos()
+func (c *CDPExecutor) createHandle() (handle string, err error) {
+	tex, err := c.taskObj.BackupExtInfos()
 	if err != nil {
-		return handler, err
+		return handle, err
 	}
 
-	hp := c.handlerPath(tex.Handler)
+	hp := c.handlePath(tex.Handler)
 
 	if _, err = os.Stat(hp); err != nil {
 		if fp, err := os.Create(hp); err != nil {
@@ -1150,6 +1249,6 @@ func (c *CDPExecutor) fetchHandler() (handler string, err error) {
 	return tex.Handler, nil
 }
 
-func (c *CDPExecutor) handlerPath(handle string) string {
+func (c *CDPExecutor) handlePath(handle string) string {
 	return filepath.Join(meta.HandlerBaseDir, handle)
 }

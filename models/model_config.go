@@ -52,12 +52,23 @@ type ConfigModel struct {
 	ExtInfo string `gorm:"column:ext_info"` // 扩展参数，JSON格式
 }
 
+type ConfigExt struct {
+	ServerAddress string `json:"server_address"`
+}
+
 func (_ ConfigModel) TableName() string {
 	return ModelDefaultSchema + ".config"
 }
 
 func (c *ConfigModel) String() string {
 	return fmt.Sprintf("<ConfigModel(ID=%v, Dir=%v>", c.ID, c.Dir)
+}
+
+func (c *ConfigModel) Ext() (ce ConfigExt, err error) {
+	if err = json.Unmarshal([]byte(c.ExtInfo), &ce); err != nil {
+		return
+	}
+	return ce, nil
 }
 
 func QueryConfigByID(db *gorm.DB, cid int64) (c ConfigModel, err error) {
@@ -162,8 +173,4 @@ func EnableConfig(db *gorm.DB, conf int64) (err error) {
 	r := db.Model(&ConfigModel{}).Where("id = ?", conf).Updates(
 		map[string]interface{}{"enable": true})
 	return r.Error
-}
-
-type ServerAddress struct {
-	ServerAddress string `json:"server_address"`
 }
