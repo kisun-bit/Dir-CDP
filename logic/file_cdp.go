@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -316,10 +315,10 @@ func (c *CDPExecutor) monitorStopNotify() {
 			ok, err := models.IsEnable(c.dp.DB, c.config.ID)
 			if !ok && err == nil {
 				logger.Fmt.Infof("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【取消事件】", c.Str())
-				c.notifyErr2Executor(ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
+				c.exitWhenErr(ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
 			} else if err != nil {
 				logger.Fmt.Infof("%v.monitorStopNotify !!!!!!!!!!!!!!!!! 【备份服务器连接失败】", c.Str())
-				c.notifyErr2Executor(ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
+				c.exitWhenErr(ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
 			} else if ok {
 				continue
 			}
@@ -480,15 +479,11 @@ func (c *CDPExecutor) initArgs() (err error) {
 	}
 
 	// 初始化备份线程池
-	numCores := int(c.config.Cores)
-	if numCores < 0 {
-		numCores = runtime.NumCPU()
-	}
-	if c.fullPool, err = ants.NewPool(numCores); err != nil {
+	if c.fullPool, err = NewPoolWithCores(int(c.config.Cores)); err != nil {
 		logger.Fmt.Errorf("%v.initArgs NewFullPool ERR=%v", c.Str(), err)
 		return
 	}
-	if c.incrPool, err = ants.NewPool(numCores); err != nil {
+	if c.incrPool, err = NewPoolWithCores(int(c.config.Cores)); err != nil {
 		logger.Fmt.Errorf("%v.initArgs NewIncrPool ERR=%v", c.Str(), err)
 		return
 	}
@@ -689,6 +684,8 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 	}
 
 	r, _ := http.NewRequest("POST", c.hostSession, body)
+	// TODO 在发生中断时，立即终止HTTP连接
+
 	r.Header.Add("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
 	if resp, err := client.Do(r); err != nil {
@@ -1032,7 +1029,7 @@ func (c *CDPExecutor) initTaskOnce() (err error) {
 	if err != nil {
 		return err
 	}
-	tex := new(models.TaskExt)
+	tex := new(models.BackupExt)
 	tex.Handler = hb.String()
 	tes, err := json.Marshal(tex)
 	if err != nil {
@@ -1116,13 +1113,13 @@ func (c *CDPExecutor) putFileEventWhenTimeout() {
 	}()
 }
 
-func (c *CDPExecutor) notifyErr2Executor(code ErrorCode, err error) {
+func (c *CDPExecutor) exitWhenErr(code ErrorCode, err error) {
 	if err == nil {
 		return
 	}
 
 	c.exitNotifyOnce.Do(func() {
-		logger.Fmt.Errorf("%v.notifyErr2Executor 捕捉到%v, CDP执行器等待退出...",
+		logger.Fmt.Errorf("%v.exitWhenErr 捕捉到%v, CDP执行器等待退出...",
 			c.Str(), ExtendErr(code, err.Error()))
 		c.exitNotify <- code
 		c.stop()
@@ -1131,16 +1128,18 @@ func (c *CDPExecutor) notifyErr2Executor(code ErrorCode, err error) {
 
 func (c *CDPExecutor) catchErr(err error) {
 	if err != nil {
-		c.notifyErr2Executor(ExitErrCodeOriginErr, err)
+		c.exitWhenErr(ExitErrCodeOriginErr, err)
 	}
 }
 
 func (c *CDPExecutor) fetchHandler() (handler string, err error) {
-	tex := new(models.TaskExt)
-	if err = json.Unmarshal([]byte(c.task.ExtInfo), tex); err != nil {
-		return
+	tex, err := c.task.BackupExtInfos()
+	if err != nil {
+		return handler, err
 	}
+
 	hp := c.handlerPath(tex.Handler)
+
 	if _, err = os.Stat(hp); err != nil {
 		if fp, err := os.Create(hp); err != nil {
 			return tex.Handler, err

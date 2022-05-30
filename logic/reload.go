@@ -89,11 +89,23 @@ func reloadTaskFromOneServer(ip string) (err error) {
 	var (
 		dp *models.DBProxy
 		cs []models.ConfigModel
+		rs []models.RestoreTaskModel
 	)
 
 	dp, err = models.NewDBProxy(ip)
 	if err != nil {
 		return
+	}
+
+	rs, err = models.QueryAllRestoreTasks(dp.DB)
+	if err != nil {
+		return
+	}
+
+	for _, c := range rs {
+		if err = models.FailedRestoreTask(dp.DB, c.ID); err != nil {
+			return
+		}
 	}
 
 	cs, err = models.QueryAllEnabledConfigs(dp.DB)
@@ -106,5 +118,6 @@ func reloadTaskFromOneServer(ip string) (err error) {
 			return
 		}
 	}
+
 	return nil
 }

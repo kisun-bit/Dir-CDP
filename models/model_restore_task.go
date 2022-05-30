@@ -15,6 +15,7 @@ type RestoreTaskModel struct {
 	Start        *time.Time `gorm:"column:start_time"`        // 开始时间
 	End          *time.Time `gorm:"column:end_time"`          // 结束时间
 	RestoreBytes int64      `gorm:"column:restore_bytes"`     // 已经还原的数据量
+	Cancel       bool       `gorm:"column:cancel"`            // 是否取消
 	Status       string     `gorm:"column:status"`            // 实时状态
 	Success      bool       `gorm:"column:success;default:f"` // 是否成功
 	Client       int64      `gorm:"column:client"`            // 恢复目标客户端
@@ -26,17 +27,45 @@ type RestoreTaskModel struct {
 		"endtime":     "str, 指定结束时间恢复，若此项存在starttime不存在，则表示恢复endtime之后的所有数据",
 	    "include":     "str, 恢复白名单"
 	    "exclude":     "str, 恢复黑名单"
+	    "when_same"    "str, 同名文件如何处理，overwrite或ignore"
+	    "threads":     "int, 恢复线程数"
 	}
 	*/
 	ExtInfo string `gorm:"column:ext_info"` // 扩展参数，JSON格式
+}
+
+type RestoreExtInfo struct {
+	RestoreDir string `json:"restore_dir"`
+	Fileset    string `json:"fileset"`
+	Starttime  string `json:"starttime"`
+	Endtime    string `json:"endtime"`
+	Include    string `json:"include"`
+	Exclude    string `json:"exclude"`
+	WhenSame   string `json:"when_same"`
+	Threads    int    `json:"threads"`
 }
 
 func (_ RestoreTaskModel) TableName() string {
 	return ModelDefaultSchema + ".restore_task"
 }
 
+func (t *RestoreTaskModel) ExtInfos() (rei RestoreExtInfo, err error) {
+	err = json.Unmarshal([]byte(t.ExtInfo), &rei)
+	return rei, err
+}
+
 func (t *RestoreTaskModel) String() string {
 	return fmt.Sprintf("<RestoreTaskModel(ID=%v, Conf=%v, StartWithRetry=%v>", t.ID, t.ConfID, t.Start.Format(meta.TimeFMT))
+}
+
+func IsRestoreCancel(db *gorm.DB, task int64) (_ bool, err error) {
+	var c RestoreTaskModel
+	r := db.Model(&RestoreTaskModel{}).Where("id = ?", task).Take(&c)
+	if r.Error != nil {
+		//logger.Fmt.Warnf("IsEnable err=%v", r.Error)
+		return false, r.Error
+	}
+	return c.Cancel, r.Error
 }
 
 func QueryRestoreTaskByID(db *gorm.DB, task int64) (t RestoreTaskModel, err error) {
@@ -44,20 +73,30 @@ func QueryRestoreTaskByID(db *gorm.DB, task int64) (t RestoreTaskModel, err erro
 	return t, r.Error
 }
 
-type RestoreFilter struct {
-	RestoreDir string `json:"restore_dir"`
-	Fileset    string `json:"fileset"`
-	Starttime  string `json:"starttime"`
-	Endtime    string `json:"endtime"`
-	Include    string `json:"include"`
-	Exclude    string `json:"exclude"`
+func QueryAllRestoreTasks(db *gorm.DB) (cs []RestoreTaskModel, err error) {
+	r := db.Model(&RestoreTaskModel{}).Where("end_time is NULL").Find(&cs)
+	return cs, r.Error
 }
 
-func QueryRestoreFilterArgs(db *gorm.DB, task int64) (f RestoreFilter, err error) {
-	r_, err := QueryRestoreTaskByID(db, task)
-	if err != nil {
-		return f, err
-	}
-	err = json.Unmarshal([]byte(r_.ExtInfo), &f)
-	return f, err
+func UpdateRestoreTask(db *gorm.DB, task int64, status string) (err error) {
+	return db.Model(&RestoreTaskModel{}).Where("id = ?", task).Updates(
+		map[string]interface{}{"status": status}).Error
+}
+
+func SuccessRestoreTask(db *gorm.DB, task int64) (err error) {
+	return db.Model(&RestoreTaskModel{}).Where("id = ?", task).Updates(
+		map[string]interface{}{
+			"status":   meta.RESTOREFINISH,
+			"end_time": time.Now(),
+			"success":  "t"},
+	).Error
+}
+
+func FailedRestoreTask(db *gorm.DB, task int64) (err error) {
+	return db.Model(&RestoreTaskModel{}).Where("id = ?", task).Updates(
+		map[string]interface{}{
+			"status":   meta.RESTORESERROR,
+			"end_time": time.Now(),
+			"success":  "f"},
+	).Error
 }

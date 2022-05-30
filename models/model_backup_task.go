@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"gorm.io/gorm"
 	"jingrongshuan/rongan-fnotify/meta"
@@ -19,12 +20,21 @@ type BackupTaskModel struct {
 	ExtInfo string     `gorm:"column:ext_info"`          // 扩展参数，JSON格式
 }
 
+type BackupExt struct {
+	Handler string `json:"handler"`
+}
+
 func (_ BackupTaskModel) TableName() string {
 	return ModelDefaultSchema + ".backup_task"
 }
 
 func (t *BackupTaskModel) String() string {
 	return fmt.Sprintf("<BackupTaskModel(ID=%v, Conf=%v, StartWithRetry=%v>", t.ID, t.ConfID, t.Start.Format(meta.TimeFMT))
+}
+
+func (t *BackupTaskModel) BackupExtInfos() (be BackupExt, err error) {
+	err = json.Unmarshal([]byte(t.ExtInfo), &be)
+	return be, err
 }
 
 func CreateBackupTaskModel(db *gorm.DB, btm *BackupTaskModel) (err error) {
@@ -40,8 +50,4 @@ func QueryBackupTaskByConfID(db *gorm.DB, cid int64) (b BackupTaskModel, err err
 func UpdateBackupTaskStatusByConfID(db *gorm.DB, cid int64, status string) (err error) {
 	return db.Model(&BackupTaskModel{}).Where("conf_id = ?", cid).Updates(
 		map[string]interface{}{"status": status}).Error
-}
-
-type TaskExt struct {
-	Handler string `json:"handler"`
 }

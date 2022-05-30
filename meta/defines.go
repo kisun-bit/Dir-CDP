@@ -49,12 +49,13 @@ const (
 	FFStatusFinished = "FINISHED"
 )
 
-var FFStatusMsg = map[string]string{
-	FFStatusWatched:  "捕捉变更",
-	FFStatusSyncing:  "正在同步",
-	FFStatusError:    "同步错误",
-	FFStatusFinished: "同步完成",
-}
+// 恢复任务的状态
+const (
+	RESTORESTART  = "START"
+	RESTOREFINISH = "FINISHED"
+	RESTORESERROR = "ERROR"
+	RESTOREING    = "RUNNING"
+)
 
 // CDP备份任务的状态
 const (
