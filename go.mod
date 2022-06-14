@@ -25,6 +25,7 @@ require (
 	github.com/ryanuber/go-glob v1.0.0
 	github.com/swaggo/files v0.0.0-20210815190702-a29dd2bc99b2 // indirect
 	github.com/swaggo/gin-swagger v1.4.3 // indirect
+	github.com/thoas/go-funk v0.9.2
 	github.com/ugorji/go v1.2.7 // indirect
 	github.com/unknwon/com v1.0.1
 	github.com/urfave/cli/v2 v2.6.0 // indirect

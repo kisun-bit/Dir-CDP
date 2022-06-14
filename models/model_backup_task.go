@@ -11,13 +11,13 @@ import (
 // BackupTaskModel备份任务
 type BackupTaskModel struct {
 	ID      int64      `gorm:"column:id;primaryKey;AUTO_INCREMENT;"`
-	Trigger int64      `gorm:"column:trigger"`           // 触发原因：1手动，2自动，0未知原因
-	ConfID  int64      `gorm:"column:conf_id"`           // 同步配置ID
-	Start   *time.Time `gorm:"column:start_time"`        // 开始时间
-	End     *time.Time `gorm:"column:end_time"`          // 结束时间
-	Status  string     `gorm:"column:status"`            // 实时状态
-	Success bool       `gorm:"column:success;default:f"` // 是否成功
-	ExtInfo string     `gorm:"column:ext_info"`          // 扩展参数，JSON格式
+	Trigger int64      `gorm:"column:trigger"`            // 触发原因：1手动，2自动，0未知原因
+	ConfID  int64      `gorm:"column:conf_id"`            // 同步配置ID
+	Start   *time.Time `gorm:"column:start_time"`         // 开始时间
+	End     *time.Time `gorm:"column:end_time"`           // 结束时间
+	Status  string     `gorm:"column:status"`             // 实时状态
+	Success bool       `gorm:"column:success;default:f"`  // 是否成功
+	ExtInfo string     `gorm:"column:ext_info;type:text"` // 扩展参数，JSON格式
 }
 
 type BackupExt struct {
