@@ -14,14 +14,14 @@ import (
 // event_file表将以config表ID进行分表处理
 // 其模板建表语句如下：
 var FileFlowCreateDDL = `
-CREATE SEQUENCE IF NOT EXISTS "rongan_fnotify".event_file_id_seq
+CREATE SEQUENCE IF NOT EXISTS "fsnotify".event_file_id_seq
     INCREMENT 1
     START 1
     MINVALUE 1
     MAXVALUE 93422337368375807
     CACHE 1;
-CREATE TABLE IF NOT EXISTS "rongan_fnotify"."event_file" (
-		"id" int8 NOT NULL DEFAULT nextval( '"rongan_fnotify".event_file_id_seq' :: regclass),
+CREATE TABLE IF NOT EXISTS "fsnotify"."event_file" (
+		"id" int8 NOT NULL DEFAULT nextval( '"fsnotify".event_file_id_seq' :: regclass),
         "timestamp" int8 NOT NULL,
         "path" TEXT COLLATE "pg_catalog"."default" NOT NULL,
         "name" TEXT COLLATE "pg_catalog"."default" NOT NULL,
@@ -34,17 +34,15 @@ CREATE TABLE IF NOT EXISTS "rongan_fnotify"."event_file" (
         "version" TEXT COLLATE "pg_catalog"."default" NOT NULL,
         "parent" TEXT COLLATE "pg_catalog"."default" NOT NULL,
         "storage" TEXT COLLATE "pg_catalog"."default" NOT NULL,
+		"bucket" Text COLLATE "pg_catalog"."default",
         "status" VARCHAR ( 16 ) COLLATE "pg_catalog"."default",
         "tag" VARCHAR ( 32 ) COLLATE "pg_catalog"."default",
         CONSTRAINT "event_file_pkey" PRIMARY KEY ( "id" )
 );
-ALTER TABLE "rongan_fnotify"."event_file" OWNER TO "postgres";
-CREATE INDEX IF NOT EXISTS "idx_rongan_fnotify_event_file_path" ON "rongan_fnotify"."event_file" USING btree ( "path" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST );
-CREATE INDEX IF NOT EXISTS "idx_rongan_fnotify_event_file_timestamp" ON "rongan_fnotify"."event_file" USING btree ( "timestamp" "pg_catalog"."int8_ops" ASC NULLS LAST );
-CREATE INDEX IF NOT EXISTS "idx_rongan_fnotify_event_file_version" ON "rongan_fnotify"."event_file" USING btree ( "version" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST );
-CREATE INDEX IF NOT EXISTS "idx_rongan_fnotify_event_file_parent" ON "rongan_fnotify"."event_file" USING btree ( "parent" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST );
-CREATE INDEX IF NOT EXISTS "idx_rongan_fnotify_event_file_type" ON "rongan_fnotify"."event_file" USING btree ( "type" "pg_catalog"."int8_ops" ASC NULLS LAST );
-CREATE INDEX IF NOT EXISTS "idx_rongan_fnotify_event_file_storage" ON "rongan_fnotify"."event_file" USING btree ( "storage" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST );`
+ALTER TABLE "fsnotify"."event_file" OWNER TO "postgres";
+CREATE INDEX IF NOT EXISTS "idx_fsnotify_event_file_path" ON "fsnotify"."event_file" USING btree ( "path" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST );
+CREATE INDEX IF NOT EXISTS "idx_fsnotify_event_file_timestamp" ON "fsnotify"."event_file" USING btree ( "timestamp" "pg_catalog"."int8_ops" ASC NULLS LAST );
+CREATE INDEX IF NOT EXISTS "idx_fsnotify_event_file_parent" ON "fsnotify"."event_file" USING btree ( "parent" COLLATE "pg_catalog"."default" "pg_catalog"."text_ops" ASC NULLS LAST );`
 
 // EventFileModel 用于记录发生变更的文件项流水信息
 type EventFileModel struct {
@@ -59,6 +57,7 @@ type EventFileModel struct {
 	Tag     string // 若启动版本，该处值为时间标签（20220101094423）
 	Parent  string // 父目录
 	Status  string // 状态，WATCHED(被监控到)|SYNCING(正在上传)|ERROR|FINISHED
+	Bucket  string // 目标桶，仅目标为s3时，该字段才有值
 	Storage string // 存储路径
 }
 
@@ -67,7 +66,7 @@ func (flow *EventFileModel) String() string {
 }
 
 func _eventFileTable(conf int64) string {
-	return fmt.Sprintf(`"rongan_fnotify"."event_file_%v"`, conf)
+	return fmt.Sprintf(`"fsnotify"."event_file_%v"`, conf)
 }
 
 type FFID struct {
@@ -103,15 +102,15 @@ func CreateFileFlowModel(db *gorm.DB, conf int64, ff *EventFileModel) (err error
 func DeleteFileFlowByConfID(db *gorm.DB, conf int64) (err error) {
 	t := fmt.Sprintf("event_file_%v", conf)
 	for _, it := range []string{
-		"idx_rongan_fnotify_event_file_path",
-		"idx_rongan_fnotify_event_file_time",
-		"idx_rongan_fnotify_event_file_version",
-		"idx_rongan_fnotify_event_file_parent",
-		"idx_rongan_fnotify_event_file_type",
-		"idx_rongan_fnotify_event_file_storage",
+		"idx_fsnotify_event_file_path",
+		"idx_fsnotify_event_file_time",
+		"idx_fsnotify_event_file_version",
+		"idx_fsnotify_event_file_parent",
+		"idx_fsnotify_event_file_type",
+		"idx_fsnotify_event_file_storage",
 	} {
 		idx := strings.ReplaceAll(it, "event_file", t)
-		if r := db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS %s ON "rongan_fnotify"."event_file_%v"`,
+		if r := db.Exec(fmt.Sprintf(`DROP INDEX IF EXISTS %s ON "fsnotify"."event_file_%v"`,
 			idx, conf)); r.Error != nil {
 			return r.Error
 		}
@@ -119,7 +118,7 @@ func DeleteFileFlowByConfID(db *gorm.DB, conf int64) (err error) {
 	if r := db.Exec(`DROP TABLE IF EXISTS ` + t); r.Error != nil {
 		return r.Error
 	}
-	s := fmt.Sprintf(`"rongan_fnotify".event_file_%v_id_seq`, conf)
+	s := fmt.Sprintf(`"fsnotify".event_file_%v_id_seq`, conf)
 	if r := db.Exec(`DROP SEQUENCE IF EXISTS ` + s); r.Error != nil {
 		return r.Error
 	}
@@ -148,6 +147,11 @@ func ExistedHistoryVersionFile(db *gorm.DB, conf int64, path string) bool {
 		return false
 	}
 	return e.Exists != "false"
+}
+
+func DeleteByPath(db *gorm.DB, conf int64, path string) (err error) {
+	sql_ := fmt.Sprintf(`DELETE * FROM %v WHERE path='%v'`, _eventFileTable(conf), path)
+	return db.Exec(sql_).Error
 }
 
 func QueryLastSameNameFile(db *gorm.DB, conf int64, path string) (f EventFileModel, err error) {
@@ -185,6 +189,12 @@ func QueryFileIteratorByTime(db *gorm.DB, conf int64, start, end *time.Time) (ro
 			_eventFileTable(conf))
 	}
 	return db.Raw(sql_).Rows()
+}
+
+func QueryFilesByPath(db *gorm.DB, conf int64, path string) (fs []EventFileModel, err error) {
+	sql_ := fmt.Sprintf(`SELECT * FROM %v where path = '%v'`, _eventFileTable(conf), path)
+	err = db.Raw(sql_).Scan(&fs).Error
+	return
 }
 
 func IsEmptyTable(db *gorm.DB, conf int64) bool {

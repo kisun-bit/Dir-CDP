@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const ModelDefaultSchema = "rongan_fnotify"
+const ModelDefaultSchema = "fsnotify"
 
 var logger = logging.Logger
 

@@ -132,6 +132,9 @@ func (r *RestoreTask) initArgs() (err error) {
 	if *r.confObj, err = models.QueryConfig(r.DBDriver.DB, r.taskObj.ConfID); err != nil {
 		return
 	}
+	if err = r.confObj.LoadsJsonFields(r.DBDriver.DB); err != nil {
+		return
+	}
 	return nil
 }
 
@@ -216,11 +219,9 @@ func (r *RestoreTask) restore() {
 
 func (r *RestoreTask) download() {
 	var (
-		err error
-		tcs models.TargetS3
 		s3s *session.Session
-		thi models.ClientInfo
 		url string
+		err error
 	)
 
 	defer func() {
@@ -231,41 +232,35 @@ func (r *RestoreTask) download() {
 		}
 	}()
 
-	if models.Is2S3(*r.confObj) {
-		if tcs, err = models.QueryTargetConfS3ByConf(r.DBDriver.DB, r.taskObj.ConfID); err != nil {
-			return
-		}
+	if r.confObj.TargetJson.TargetType == meta.WatchingConfTargetS3 {
 		s3s, _ = tools.NewS3Client(
-			tcs.TargetConfS3.AccessKey,
-			tcs.TargetConfS3.SecretKey,
-			tcs.TargetConfS3.Endpoint,
-			tcs.TargetConfS3.Region,
-			tcs.TargetConfS3.SSL,
-			tcs.TargetConfS3.Path)
+			r.confObj.S3ConfJson.AK,
+			r.confObj.S3ConfJson.SK,
+			r.confObj.S3ConfJson.Endpoint,
+			r.confObj.S3ConfJson.Region,
+			r.confObj.S3ConfJson.SSL,
+			r.confObj.S3ConfJson.Style == "path")
 	} else {
-		if thi, err = models.QueryTargetHostInfoByConf(r.DBDriver.DB, r.taskObj.ConfID); err != nil {
-			return
-		}
-		url = fmt.Sprintf("http://%v:%v/api/v1/download/", thi.Address, meta.AppPort)
+		url = fmt.Sprintf("http://%v:%v/api/v1/download/", r.confObj.TargetHostJson.Address, meta.AppPort)
 	}
 
 	for ffm := range r.queue {
 		_ = r.pool.Submit(func() {
-			r.downloadOneFile(ffm, tcs, s3s, thi, url)
+			r.downloadOneFile(ffm, s3s, url)
 		})
 	}
 
 	<-r.exitNotify
 }
 
-func (r *RestoreTask) downloadOneFile(ffm models.EventFileModel, tcs models.TargetS3, s3s *session.Session,
-	thi models.ClientInfo, url string) {
+func (r *RestoreTask) downloadOneFile(ffm models.EventFileModel, s3s *session.Session, url string) {
 	var err error
 	if !r.filter.IsValidByGrep(ffm.Path) {
 		return
 	}
 
-	local := strings.Replace(ffm.Path, r.confObj.Dir, r.keyArgs.RestoreDir, 1) + meta.IgnoreFlag
+	// TODO 由映射策略匹配到本地路径
+	local := strings.Replace(ffm.Path, "", r.keyArgs.RestoreDir, 1) + meta.IgnoreFlag
 	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
@@ -279,7 +274,8 @@ func (r *RestoreTask) downloadOneFile(ffm models.EventFileModel, tcs models.Targ
 				downloader_.Concurrency = s3manager.DefaultDownloadConcurrency
 			},
 		)
-		if err = r._downloadFromS3(ffm, target, downloader, tcs.TargetConfS3.Bucket); err != nil {
+		// TODO 由映射策略匹配到桶名称
+		if err = r._downloadFromS3(ffm, target, downloader, ""); err != nil {
 			return
 		}
 	} else {

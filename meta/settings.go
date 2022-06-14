@@ -22,7 +22,7 @@ const (
 	AppPort         = 5111
 	AppReadTimeout  = 60 * time.Second
 	AppWriteTimeout = 60 * time.Second
-	AppMode         = "debug"
+	AppMode         = "release"
 )
 
 // 备份文件通道大小（不涉及上传/下载操作）

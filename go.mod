@@ -3,6 +3,7 @@ module jingrongshuan/rongan-fnotify
 go 1.15
 
 require (
+	github.com/asmcos/requests v0.0.0-20210319030608-c839e8ae4946
 	github.com/astaxie/beego v1.12.3
 	github.com/boltdb/bolt v1.3.1
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
@@ -25,6 +26,7 @@ require (
 	github.com/ryanuber/go-glob v1.0.0
 	github.com/swaggo/files v0.0.0-20210815190702-a29dd2bc99b2 // indirect
 	github.com/swaggo/gin-swagger v1.4.3 // indirect
+	github.com/thoas/go-funk v0.9.2
 	github.com/ugorji/go v1.2.7 // indirect
 	github.com/unknwon/com v1.0.1
 	github.com/urfave/cli/v2 v2.6.0 // indirect

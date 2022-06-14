@@ -2,58 +2,115 @@ package models
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/thoas/go-funk"
 	"gorm.io/gorm"
 	"jingrongshuan/rongan-fnotify/meta"
 	"strings"
 )
 
+type ConfigModelExtInfo struct {
+	ServerAddress string `json:"server_address"`
+}
+
+type ConfigModelTimeStrategy struct {
+	Pre   int    `json:"days"`
+	After int    `json:"daysLast"`
+	Type  string `json:"timeType"`
+}
+
+type ConfigModelTarget struct {
+	TargetType string `json:"target_type"`
+	TargetID   int64  `json:"target_id"`
+}
+
+type ConfigModelOneDirMap struct {
+	Origin    string `json:"origin"`
+	Bucket    string `json:"bucket"`
+	Target    string `json:"target"`
+	Recursion bool   `json:"recursion"`
+	Depth     int    `json:"depth"`
+}
+
 // ConfigModel 用于监控同步配置
 type ConfigModel struct {
-	ID         int64  `gorm:"column:id;primaryKey;AUTO_INCREMENT;"`
-	Origin     int64  `gorm:"column:origin"`                // 同步源机ID
-	Server     int64  `gorm:"column:server"`                // 备份服务器ID
-	Dir        string `gorm:"column:dir;type:text"`         // 监控源目录
-	Include    string `gorm:"column:include;type:text"`     // 监控白名单，需要监控哪些类型文件
-	Exclude    string `gorm:"column:exclude;type:text"`     // 监控黑名单，排除监控哪些类型文件
-	Recursion  bool   `gorm:"column:recursion;default:t"`   // 是否递归监控
-	ValidDays  int64  `gorm:"column:valid_days;default:-1"` // 备份最近多久的文件, -1表示无限制
-	Depth      int64  `gorm:"column:depth;default:-1"`      // 监控目录深度，仅在Recursion为true时有用，默认为-1(无限制)
-	Compress   bool   `gorm:"column:compress;default:f"`    // 是否开启压缩
-	RetainSecs int64  `gorm:"column:retainsecs;default:-1"` // 保留期限，-1表示无限制
-	Cores      int64  `gorm:"column:cores;default:1"`       // 并发数，默认1
-	Enable     bool   `gorm:"column:enable;default:f"`      // 启用配置
+	ID     int64  `gorm:"column:id;primaryKey;AUTO_INCREMENT;"`
+	Name   string `gorm:"column:name;type:text"`
+	Desc   string `gorm:"column:desc;type:text"`
+	Origin int64  `gorm:"column:origin"` // 同步源机ID
+	Server int64  `gorm:"column:server"` // 备份服务器ID
+	/*XXX DirsMapping 源目录与目标目录的映射关系
+
+	支持多个目录，其结构如下
+	[
+		{
+			"origin": "/opt/dir1",
+			"bucket": "",
+			"target": "/opt/tmp",
+			"recursion": true,
+			"depth": -1,
+		},
+		{
+			"origin": "/opt/dir1",
+			"bucket": "",
+			"target": "/opt/tmp",
+			"recursion": false,
+			"depth": -1,
+		},
+	]
+	*/
+	DirsMapping string `gorm:"column:dirs_mapping;type:text"`
+	Include     string `gorm:"column:include;type:text"` // 监控白名单，需要监控哪些类型文件
+	Exclude     string `gorm:"column:exclude;type:text"` // 监控黑名单，排除监控哪些类型文件
+	/*XXX TimeStrategy 备份时间策略
+
+	支持下述4种策略
+	- 所有时间点(type=no_limit)
+	- x天以前的(pre=x, type=pre)
+	- 最近x天的(pre=y, type=after)
+	- 最近x天到y天的(pre=x, after=y, type=center)
+
+	结构
+	{
+		"pre": 3,
+		"after": 4,
+		"type": "pre|center|after|no_limit"
+	}
+	*/
+	TimeStrategy  string `gorm:"column:time_strategy;type:text"`  // 备份最近多久的文件, -1表示无限制
+	RetainSecs    int64  `gorm:"column:keep_secs;default:-1"`     // 保留期限，-1表示无限制
+	Cores         int64  `gorm:"column:cores;default:1"`          // 并发数，默认1
+	EnableVersion bool   `gorm:"column:enable_version;default:t"` // 启用版本, 默认为True
+	Enable        bool   `gorm:"column:enable;default:f"`         // 启用配置
 	/* XXX Target现行逻辑说明
 	target 配置目标目录时，可以指定下述几种类型：
 	1. 云存储（AWS S3）
 	{
 	    "target_type": "S3",
-	    "target_conf": {
-			"access_key": "access_key",
-			"secret_key": "secret_key",
-			"endpoint": "www.endpoint.com"，
-			"region": "us-east-1",
-			"ssl": false,
-			"bucket": "bucket-name"
-			"path": true,
-		}
+	    "target_id": 1
 	}
 	2. 异机(HOST)
 	{
 	    "target_type": "HOST",
-	    "target_conf": {
-			"client_id": -1,
-	        "remote_path": "C:\\backup\\"
-		}
+	    "target_id": 2
 	}
-	TODO support more storage type...
 	*/
-	Target  string `gorm:"column:target"`   // 同步目标信息
-	ExtInfo string `gorm:"column:ext_info"` // 扩展参数，JSON格式
-}
+	Target string `gorm:"column:target;type:text"` // 同步目标信息
+	/*XXX ExtInfo 扩展参数
+	{
+		"server_address": "192.168.1.90"
+	}
+	*/
+	ExtInfo string `gorm:"column:ext_info;type:text"` // 扩展参数，JSON格式
 
-type ConfigExt struct {
-	ServerAddress string `json:"server_address"`
+	OriginHostJson   Client                  `gorm:"-"`
+	TargetHostJson   Client                  `gorm:"-"`
+	S3ConfJson       S3Conf                  `gorm:"-"`
+	ExtInfoJson      ConfigModelExtInfo      `gorm:"-"`
+	TimeStrategyJson ConfigModelTimeStrategy `gorm:"-"`
+	TargetJson       ConfigModelTarget       `gorm:"-"`
+	DirsMappingJson  []ConfigModelOneDirMap  `gorm:"-"`
 }
 
 func (_ ConfigModel) TableName() string {
@@ -61,14 +118,106 @@ func (_ ConfigModel) TableName() string {
 }
 
 func (c *ConfigModel) String() string {
-	return fmt.Sprintf("<ConfigModel(ID=%v, Dir=%v>", c.ID, c.Dir)
+	return fmt.Sprintf("<ConfigModel(ID=%v>", c.ID)
 }
 
-func (c *ConfigModel) Ext() (ce ConfigExt, err error) {
-	if err = json.Unmarshal([]byte(c.ExtInfo), &ce); err != nil {
+func (c *ConfigModel) LoadsJsonFields(db *gorm.DB) (err error) {
+	if err = c.loadOriginHostJson(db); err != nil {
+		logger.Fmt.Errorf("loadOriginHostJson ERR=%v", err)
 		return
 	}
-	return ce, nil
+	if err = c.loadTargetJson(); err != nil {
+		logger.Fmt.Errorf("loadTargetJson ERR=%v", err)
+		return
+	}
+	if err = c.loadTargetHostJson(db); err != nil {
+		logger.Fmt.Errorf("loadTargetHostJson ERR=%v", err)
+		return
+	}
+	if err = c.loadExtInfoJson(); err != nil {
+		logger.Fmt.Errorf("loadExtInfoJson ERR=%v", err)
+		return
+	}
+	if err = c.loadTimeStrategyJson(); err != nil {
+		logger.Fmt.Errorf("loadTimeStrategyJson ERR=%v", err)
+		return
+	}
+	if err = c.loadDirsMappingJson(); err != nil {
+		logger.Fmt.Errorf("loadDirsMappingJson ERR=%v", err)
+		return
+	}
+	if err = c.loadS3ConfJson(db); err != nil {
+		logger.Fmt.Errorf("loadS3ConfJson ERR=%v", err)
+		return
+	}
+	return
+}
+
+func (c *ConfigModel) loadOriginHostJson(db *gorm.DB) (err error) {
+	c.OriginHostJson, err = QueryClientInfoByID(db, c.Origin)
+	return
+}
+
+func (c *ConfigModel) loadTargetHostJson(db *gorm.DB) (err error) {
+	if c.TargetJson.TargetType != meta.WatchingConfTargetHost {
+		return nil
+	}
+	c.TargetHostJson, err = QueryClientInfoByID(db, c.TargetJson.TargetID)
+	return
+}
+
+func (c *ConfigModel) loadExtInfoJson() (err error) {
+	return json.Unmarshal([]byte(c.ExtInfo), &c.ExtInfoJson)
+}
+
+func (c *ConfigModel) loadTimeStrategyJson() (err error) {
+	return json.Unmarshal([]byte(c.TimeStrategy), &c.TimeStrategyJson)
+}
+
+func (c *ConfigModel) loadTargetJson() (err error) {
+	return json.Unmarshal([]byte(c.Target), &c.TargetJson)
+}
+
+func (c *ConfigModel) loadDirsMappingJson() (err error) {
+	return json.Unmarshal([]byte(c.DirsMapping), &c.DirsMappingJson)
+}
+
+func (c *ConfigModel) loadS3ConfJson(db *gorm.DB) (err error) {
+	if c.TargetJson.TargetType == meta.WatchingConfTargetHost {
+		return nil
+	}
+	c.S3ConfJson, err = QueryS3ConfByID(db, c.TargetJson.TargetID)
+	return
+}
+
+func (c *ConfigModel) Buckets() (ods []string) {
+	tmp := make([]string, 0)
+	for _, v := range c.DirsMappingJson {
+		tmp = append(tmp, v.Bucket)
+	}
+	return funk.UniqString(tmp)
+}
+
+func (c *ConfigModel) SpecifyTarget(path string) (origin, bucket, prefix string, err error) {
+	var item ConfigModelOneDirMap
+	for _, dm := range c.DirsMappingJson {
+		if strings.HasPrefix(path, dm.Origin) && len(dm.Origin) > len(item.Origin) {
+			item = dm
+		}
+	}
+	if item.Origin == meta.UnsetStr {
+		err = errors.New("failed to match origin path")
+		return
+	}
+	return item.Origin, item.Bucket, item.Target, err
+}
+
+func (c *ConfigModel) SpecifyTargetWhenHost(path string) (origin, remote string, err error) {
+	o, _, p, e := c.SpecifyTarget(path)
+	if err = e; err != nil {
+		return
+	}
+	return o, p, nil
 }
 
 func QueryConfigByID(db *gorm.DB, cid int64) (c ConfigModel, err error) {
@@ -76,87 +225,13 @@ func QueryConfigByID(db *gorm.DB, cid int64) (c ConfigModel, err error) {
 	return c, r.Error
 }
 
-func Is2Host(config ConfigModel) bool {
-	return strings.Contains(config.Target, fmt.Sprintf(`"%s"`, meta.WatchingConfTargetHost))
-}
-
-func Is2S3(config ConfigModel) bool {
-	return strings.Contains(config.Target, fmt.Sprintf(`"%s"`, meta.WatchingConfTargetS3))
-}
-
-type ClientInfo struct {
-	ID      int64  `json:"id"`
-	Address string `json:"address"`
-	Type    string `json:"type"`
-}
-
-func QueryTargetHostInfoByConf(db *gorm.DB, conf int64) (c ClientInfo, err error) {
-	var tch TargetHost
-	if tch, err = QueryTargetConfHostByConf(db, conf); err != nil {
-		return
-	}
-	return QueryHostInfoByHostID(db, tch.TargetConfHost.ClientID)
-}
-
-func QueryHostInfoByHostID(db *gorm.DB, id int64) (c ClientInfo, err error) {
-	if r := db.Raw(
-		fmt.Sprintf("SELECT id, address, type FROM web.t_client WHERE id = %v;", id)).Scan(&c); r.Error != nil {
-		return c, r.Error
-	}
-	return
-}
-
-type TargetS3 struct {
-	TargetType   string       `json:"target_type"`
-	TargetConfS3 TargetConfS3 `json:"target_conf"`
-}
-
-type TargetConfS3 struct {
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
-	Endpoint  string `json:"endpoint"`
-	Region    string `json:"region"`
-	Bucket    string `json:"bucket"`
-	SSL       bool   `json:"ssl"`
-	Path      bool   `json:"path"`
-}
-
-type TargetHost struct {
-	TargetType     string         `json:"target_type"`
-	TargetConfHost TargetConfHost `json:"target_conf"`
-}
-
-type TargetConfHost struct {
-	ClientID   int64  `json:"client_id"`
-	RemotePath string `json:"remote_path"`
-}
-
-func QueryTargetConfS3ByConf(db *gorm.DB, conf int64) (tcs TargetS3, err error) {
-	config, err := QueryConfig(db, conf)
-	if err != nil {
-		return tcs, err
-	}
-	err = json.Unmarshal([]byte(config.Target), &tcs)
-	return
-}
-
-func QueryTargetConfHostByConf(db *gorm.DB, conf int64) (tch TargetHost, err error) {
-	config, err := QueryConfig(db, conf)
-	if err != nil {
-		return tch, err
-	}
-	err = json.Unmarshal([]byte(config.Target), &tch)
-	return
-}
-
 func IsEnable(db *gorm.DB, confID int64) (_ bool, err error) {
 	var c ConfigModel
 	r := db.Model(&ConfigModel{}).Where("id = ?", confID).Take(&c)
 	if r.Error != nil {
-		//logger.Fmt.Warnf("IsEnable err=%v", r.Error)
 		return false, r.Error
 	}
-	return c.Enable, r.Error
+	return c.Enable, nil
 }
 
 func QueryConfig(db *gorm.DB, conf int64) (c ConfigModel, err error) {

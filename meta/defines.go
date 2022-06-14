@@ -96,3 +96,21 @@ const DefaultDRQueueSize = 100
 
 // 重试间隔时间
 var DefaultRetryTimeInterval = 5 * time.Second
+
+// 基于扫描时枚举路径的默认通道缓存
+const DefaultEnumPathChannelSize = 10
+
+const (
+	UnsetInt = -1
+	UnsetStr = ""
+)
+
+// 指定时间段备份的时间区间类型
+const (
+	TimeStrategyPre     = "pre"
+	TimeStrategyNext    = "next"
+	TimeStrategyCenter  = "center"
+	TimeStrategyNoLimit = "none"
+)
+
+var OneDay = 24 * time.Hour

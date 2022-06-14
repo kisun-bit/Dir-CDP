@@ -30,7 +30,7 @@ type Win32Watcher struct {
 	closeOnce      *sync.Once
 }
 
-func NewWatcher(Dir string, IsRecursive bool) (w *Win32Watcher, err error) {
+func NewWatcher(Dir string, IsRecursive bool, pipe chan FileWatchingObj) (w *Win32Watcher, err error) {
 	if _, err = os.Stat(Dir); err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func NewWatcher(Dir string, IsRecursive bool) (w *Win32Watcher, err error) {
 	w.root = Dir
 	w.recursive = IsRecursive
 	w.buffer = make([]byte, WatchingBufferSize)
-	w.notify = make(chan FileWatchingObj, WatchingQueueSize)
+	w.notify = pipe
 	w.stopNotify = new(int32)
 	w.closeOnce = new(sync.Once)
 	return w, err
@@ -63,7 +63,6 @@ func (w *Win32Watcher) SetStop() {
 
 	logging.Logger.Fmt.Infof("%v.SetStop 正在关闭文件更新事件捕捉器...", w.Str())
 	atomic.StoreInt32(w.stopNotify, 1)
-	w.closeNotify()
 
 	// 产生一个临时变更事件，用于及时退出此线程
 	fp, err := ioutil.TempFile(w.root, meta.IgnoreFlag)
@@ -77,15 +76,15 @@ func (w *Win32Watcher) SetStop() {
 	_, _ = fp.WriteString(meta.IgnoreFlag)
 }
 
-func (w *Win32Watcher) Start() (_ chan FileWatchingObj, err error) {
+func (w *Win32Watcher) Start() (err error) {
 	if err = w.changeDirAccessRight(); err != nil {
-		return nil, err
+		return
 	}
 
 	if err = w.asyncLoop(); err != nil {
-		return nil, err
+		return
 	}
-	return w.notify, nil
+	return nil
 }
 
 func (w *Win32Watcher) changeDirAccessRight() (err error) {
@@ -114,7 +113,7 @@ func (w *Win32Watcher) asyncLoop() (err error) {
 		}()
 
 		defer syscall.CloseHandle(w.rootDescriptor)
-		defer w.closeNotify()
+		//defer w.closeNotify()
 
 		for {
 			if w.isStopped() {

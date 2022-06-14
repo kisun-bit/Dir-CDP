@@ -32,6 +32,7 @@ func Upload(c *gin.Context) {
 		}
 
 		filename := part.FileName()
+		// 权限
 		if filename == "" {
 			appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
 			return

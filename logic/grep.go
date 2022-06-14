@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-const SEQ = "@jrsa@"
+const SEQ = "@JRSA@"
 
-// filter 实现基于文件路径的黑白名单过滤
+// listFilter 实现基于文件路径的黑白名单过滤
 type Grep struct {
 	Include []string
 	Exclude []string

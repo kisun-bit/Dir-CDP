@@ -2,17 +2,14 @@ package tools
 
 import (
 	"fmt"
-	"github.com/gofrs/uuid"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/credentials"
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
 	"github.com/journeymidnight/aws-sdk-go/service/s3"
 	gos3 "github.com/kisun-bit/go-s3"
 	"jingrongshuan/rongan-fnotify/meta"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -36,24 +33,6 @@ func ConvertToWin32Event(no uint32) meta.Event {
 		panic("invalid win32 event")
 	}
 	return meta.Event(no)
-}
-
-// ConvertToWin32Event 若输入IP为本机IP地址，则返回true
-func IsLocalIP(ip string) (bool, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return false, err
-	}
-	for i := range addrs {
-		intf, _, err := net.ParseCIDR(addrs[i].String())
-		if err != nil {
-			return false, err
-		}
-		if net.ParseIP(ip).Equal(intf) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func NewS3Client(
@@ -81,22 +60,26 @@ func NewS3Client(
 	return S3Session, gos3.S3Client{Client: s3client}
 }
 
-func GenerateS3Key(conf int64, dir int64) string {
-	uid, err := uuid.NewV4()
+func GenerateS3Key(conf int64, root, local, prefix string) string {
+	relative, err := filepath.Rel(root, local)
 	if err != nil {
-		panic(err)
+		return meta.UnsetStr
 	}
-	return fmt.Sprintf("%v/%v", conf, dir, uid.String())
+	if prefix != meta.UnsetStr {
+		return fmt.Sprintf("%s/%s", prefix, relative)
+	}
+	return fmt.Sprintf("notify%v/%v", conf, relative)
 }
 
-func GenerateRemoteHostKey(conf int64, dir int64, remote string, targetWin bool) string {
-	absRemote := filepath.Join(remote, strconv.FormatInt(conf, 10), strconv.FormatInt(dir, 10))
-	uid, err := uuid.NewV4()
+func GenerateRemoteHostKey(root, local, remote string, targetWin bool) string {
+	relative, err := filepath.Rel(root, local)
 	if err != nil {
-		panic(err)
+		return meta.UnsetStr
 	}
-	path := filepath.Join(absRemote, uid.String())
-	return CorrectPathWithPlatform(path, targetWin)
+	if remote != meta.UnsetStr {
+		return CorrectPathWithPlatform(filepath.Join(remote, relative), targetWin)
+	}
+	return meta.UnsetStr
 }
 
 func String2Time(str string) (t time.Time) {
@@ -113,10 +96,6 @@ func String2Time(str string) (t time.Time) {
 
 func IsWin(s string) bool {
 	return strings.Contains(strings.ToLower(s), "win")
-}
-
-func IsLinux(s string) bool {
-	return strings.Contains(strings.ToLower(s), "linux")
 }
 
 func ConvertModTime2VersionFlag(mod int64) (ver string) {
@@ -144,13 +123,4 @@ func CorrectDirWithPlatform(dir string, win bool) string {
 		return dir + "/"
 	}
 	return dir
-}
-
-func StringInSlice(a string, list []string) bool {
-	for _, b := range list {
-		if b == a {
-			return true
-		}
-	}
-	return false
 }

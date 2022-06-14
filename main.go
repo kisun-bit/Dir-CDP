@@ -32,7 +32,7 @@ func StartHTTPService() (err error) {
 
 func StartReloadTask() {
 	go func() {
-		time.Sleep(12 * time.Second)
+		time.Sleep(5 * time.Second)
 		logic.ReloadCDPTask()
 	}()
 }
