@@ -20,6 +20,7 @@ const (
 )
 
 type Win32Watcher struct {
+	depth          int
 	root           string
 	rootPtr        *uint16
 	rootDescriptor syscall.Handle
@@ -30,16 +31,17 @@ type Win32Watcher struct {
 	closeOnce      *sync.Once
 }
 
-func NewWatcher(Dir string, IsRecursive bool, pipe chan FileWatchingObj) (w *Win32Watcher, err error) {
+func NewWatcher(Dir string, IsRecursive bool, depth int) (w *Win32Watcher, err error) {
 	if _, err = os.Stat(Dir); err != nil {
 		return nil, err
 	}
 
 	w = new(Win32Watcher)
+	w.depth = depth
 	w.root = Dir
 	w.recursive = IsRecursive
 	w.buffer = make([]byte, WatchingBufferSize)
-	w.notify = pipe
+	w.notify = make(chan FileWatchingObj, WatchingQueueSize)
 	w.stopNotify = new(int32)
 	w.closeOnce = new(sync.Once)
 	return w, err
@@ -57,12 +59,12 @@ func (w Win32Watcher) closeNotify() {
 
 func (w *Win32Watcher) SetStop() {
 	if w.isStopped() {
-		logging.Logger.Fmt.Infof("%v.SetStop 已停止文件更新事件捕捉器", w.Str())
 		return
 	}
 
-	logging.Logger.Fmt.Infof("%v.SetStop 正在关闭文件更新事件捕捉器...", w.Str())
+	logging.Logger.Fmt.Infof("%v.SetStop exit...", w.Str())
 	atomic.StoreInt32(w.stopNotify, 1)
+	w.closeNotify()
 
 	// 产生一个临时变更事件，用于及时退出此线程
 	fp, err := ioutil.TempFile(w.root, meta.IgnoreFlag)
@@ -76,7 +78,7 @@ func (w *Win32Watcher) SetStop() {
 	_, _ = fp.WriteString(meta.IgnoreFlag)
 }
 
-func (w *Win32Watcher) Start() (err error) {
+func (w *Win32Watcher) Start() (_ chan FileWatchingObj, err error) {
 	if err = w.changeDirAccessRight(); err != nil {
 		return
 	}
@@ -84,7 +86,7 @@ func (w *Win32Watcher) Start() (err error) {
 	if err = w.asyncLoop(); err != nil {
 		return
 	}
-	return nil
+	return w.notify, nil
 }
 
 func (w *Win32Watcher) changeDirAccessRight() (err error) {
@@ -157,25 +159,29 @@ func (w *Win32Watcher) collectChangeInfo() {
 		name := syscall.UTF16ToString(buf[:raw.FileNameLength/2])
 		path := filepath.Join(w.root, name)
 
-		fi, err := os.Stat(path)
-		if err != nil {
-			break
-		}
-		if fi.IsDir() {
-			break
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			break
-		}
-
 		info := new(FileWatchingObj)
-		info.Time = fi.ModTime().Unix()
 		info.Path = path
-		info.Name = name
-		info.Type = tools.ConvertMode2FType(fi.Mode())
-		info.Mode = fi.Mode()
-		info.Size = fi.Size()
 		info.Event = tools.ConvertToWin32Event(raw.Action)
+		info.Name = name
+
+		if info.Event == meta.Win32EventDelete || info.Event == meta.Win32EventRenameFrom {
+			fmt.Println(info.Path)
+		} else {
+			fi, err := os.Stat(path)
+			if err != nil {
+				break
+			}
+			if fi.IsDir() {
+				break
+			}
+			if fi.Mode()&os.ModeSymlink != 0 {
+				break
+			}
+			info.Time = fi.ModTime().Unix()
+			info.Type = tools.ConvertMode2FType(fi.Mode())
+			info.Mode = fi.Mode()
+			info.Size = fi.Size()
+		}
 
 		if w.isStopped() {
 			return

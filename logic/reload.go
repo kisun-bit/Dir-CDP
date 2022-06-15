@@ -114,7 +114,7 @@ func reloadTaskFromOneServer(ip string) (err error) {
 	}
 
 	for _, c := range cs {
-		if err = AsyncStartCDPExecutor(ip, c.ID, true); err != nil {
+		if err = LoadCDP(ip, c.ID, true); err != nil {
 			return
 		}
 	}

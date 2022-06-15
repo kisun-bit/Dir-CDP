@@ -21,8 +21,8 @@ func EnableCDPConfig(c *gin.Context) {
 	}
 
 	// 初始化DB连接
-	if err := logic.AsyncStartCDPExecutor(ip, id, false); err != nil {
-		logger.Fmt.Errorf("EnableCDPConfig AsyncStartCDPExecutor. ERR=%v", err)
+	if err := logic.LoadCDP(ip, id, false); err != nil {
+		logger.Fmt.Errorf("EnableCDPConfig LoadCDP. ERR=%v", err)
 		appG.Response(http.StatusBadRequest, statuscode.INITCDPEXEFAILED, nil)
 		return
 	}

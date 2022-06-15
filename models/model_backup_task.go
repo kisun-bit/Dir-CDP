@@ -29,7 +29,7 @@ func (_ BackupTaskModel) TableName() string {
 }
 
 func (t *BackupTaskModel) String() string {
-	return fmt.Sprintf("<BackupTaskModel(ID=%v, Triiger=%v, Conf=%v, Start=%v, Status=%v>",
+	return fmt.Sprintf("<BackupTaskModel(ID=%v, Trigger=%v, Conf=%v, Start=%v, Status=%v>",
 		t.ID, t.Trigger, t.ConfID, t.Start.Format(meta.TimeFMT), t.Status)
 }
 

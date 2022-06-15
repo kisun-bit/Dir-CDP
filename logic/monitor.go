@@ -28,10 +28,8 @@ func NewMonitorWithRestore(restore *RestoreTask) *hangEventMonitor {
 }
 
 func (h *hangEventMonitor) monitor() {
-	logger.Fmt.Infof("%v.monitor 任务监控器已启动, 正在捕捉中断事件...", h.Str())
-
 	defer func() {
-		logger.Fmt.Infof("%v.monitor【终止】", h.Str())
+		logger.Fmt.Infof("%v.monitor exit...", h.Str())
 	}()
 
 	var (
@@ -53,7 +51,7 @@ func (h *hangEventMonitor) monitor() {
 			}
 
 			if !ok && err == nil {
-				logger.Fmt.Infof("%v.monitor !!!!!!!!!!!!!!!!! 【取消事件】", h.Str())
+				logger.Fmt.Infof("%v.monitor !!!!!!!!!!!!!!!!! disable", h.Str())
 				if h.type_ == meta.TaskTypeBackup {
 					h.CDPExecutorObj().exitWhenErr(
 						ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
@@ -62,13 +60,13 @@ func (h *hangEventMonitor) monitor() {
 						ExitErrCodeUserCancel, ErrByCode(ExitErrCodeUserCancel))
 				}
 			} else if err != nil {
-				logger.Fmt.Infof("%v.monitor !!!!!!!!!!!!!!!!! 【备份服务器连接失败】", h.Str())
+				logger.Fmt.Infof("%v.monitor !!!!!!!!!!!!!!!!! server network err", h.Str())
 				if h.type_ == meta.TaskTypeBackup {
 					h.CDPExecutorObj().exitWhenErr(
-						ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
+						ExitErrCodeServerConn, ErrByCode(ExitErrCodeServerConn))
 				} else if h.type_ == meta.TaskTypeRestore {
 					h.RestoreObj().exitWhenErr(
-						ExitErrCodeTargetConn, ErrByCode(ExitErrCodeTargetConn))
+						ExitErrCodeServerConn, ErrByCode(ExitErrCodeServerConn))
 				}
 			} else if ok {
 				continue

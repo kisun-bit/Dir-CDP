@@ -190,10 +190,18 @@ func (c *ConfigModel) loadS3ConfJson(db *gorm.DB) (err error) {
 	return
 }
 
-func (c *ConfigModel) Buckets() (ods []string) {
+func (c *ConfigModel) UniqBuckets() (bs []string) {
 	tmp := make([]string, 0)
 	for _, v := range c.DirsMappingJson {
 		tmp = append(tmp, v.Bucket)
+	}
+	return funk.UniqString(tmp)
+}
+
+func (c *ConfigModel) UniqDirs() (ods []string) {
+	tmp := make([]string, 0)
+	for _, v := range c.DirsMappingJson {
+		tmp = append(tmp, v.Origin)
 	}
 	return funk.UniqString(tmp)
 }

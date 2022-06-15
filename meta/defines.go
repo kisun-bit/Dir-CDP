@@ -35,6 +35,10 @@ const (
 	Win32EventFullScan
 )
 
+func (e Event) Str() string {
+	return EventCode[e]
+}
+
 var EventCode = map[Event]string{
 	Win32EventCreate:     "NT_CREATE",
 	Win32EventDelete:     "NT_DELETE",

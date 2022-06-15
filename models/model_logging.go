@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"gorm.io/gorm"
+	"time"
+)
 
 type Logging struct {
 	Id         int64      `gorm:"column:id;primaryKey;AUTO_INCREMENT" json:"id"`
@@ -17,4 +20,23 @@ type Logging struct {
 
 func (Logging) TableName() string {
 	return ModelDefaultSchema + ".log"
+}
+
+func NewLog(db *gorm.DB, conf, task int64, type_, key, status, message, detail string, level int) (err error) {
+	current := time.Now()
+	return db.Model(&Logging{}).Create(&Logging{
+		ConfID:     conf,
+		TaskID:     task,
+		TaskType:   type_,
+		Key:        key,
+		TaskStatus: status,
+		Message:    message,
+		JsonDetail: detail,
+		Level:      level,
+		Time:       &current,
+	}).Error
+}
+
+func DeleteLogsByTime(db *gorm.DB, conf, time_ int64) (err error) {
+	return db.Where("conf_id = ? AND time < ?", conf, time.Unix(time_, 0)).Delete(&Logging{}).Error
 }

@@ -103,7 +103,7 @@ func (w *Walker) Walk() (err error) {
 			}
 			w.reportFinished()
 			atomic.StoreInt32(w.pipClosed, 1)
-			logger.Fmt.Infof("%v.Walk 完成枚举", w.String())
+			logger.Fmt.Infof("%v.Walk exit...", w.String())
 		}()
 		w.wg.Wait()
 	}()
