@@ -154,6 +154,11 @@ func DeleteByPath(db *gorm.DB, conf int64, path string) (err error) {
 	return db.Exec(sql_).Error
 }
 
+func DeleteNoVersionFilesByPath(db *gorm.DB, conf int64, path string) (err error) {
+	sql_ := fmt.Sprintf(`DELETE * FROM %v WHERE path='%v' AND tag=''`, _eventFileTable(conf), path)
+	return db.Exec(sql_).Error
+}
+
 func QueryLastSameNameFile(db *gorm.DB, conf int64, path string) (f EventFileModel, err error) {
 	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path='%v' ORDER BY id DESC LIMIT 1`,
 		_eventFileTable(conf), strings.ReplaceAll(path, `'`, `''`))
@@ -191,7 +196,7 @@ func QueryFileIteratorByTime(db *gorm.DB, conf int64, start, end *time.Time) (ro
 	return db.Raw(sql_).Rows()
 }
 
-func QueryFilesByPath(db *gorm.DB, conf int64, path string) (fs []EventFileModel, err error) {
+func QueryNoVersionFilesByPath(db *gorm.DB, conf int64, path string) (fs []EventFileModel, err error) {
 	sql_ := fmt.Sprintf(`SELECT * FROM %v where path = '%v'`, _eventFileTable(conf), path)
 	err = db.Raw(sql_).Scan(&fs).Error
 	return

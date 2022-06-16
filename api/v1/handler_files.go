@@ -7,6 +7,7 @@ import (
 	"io"
 	"jingrongshuan/rongan-fnotify/api/app"
 	"jingrongshuan/rongan-fnotify/api/statuscode"
+	"jingrongshuan/rongan-fnotify/meta"
 	"net/http"
 	"os"
 	"path"
@@ -88,20 +89,39 @@ func Download(c *gin.Context) {
 
 func Delete(c *gin.Context) {
 	appG := app.Gin{C: c}
-	b64 := com.StrTo(c.Param("b64")).String()
-	pb, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		appG.Response(http.StatusBadRequest, statuscode.WRITEIOFAILED, nil)
+	file := c.PostForm("b64")
+	if file == meta.UnsetStr {
+		appG.Response(http.StatusBadRequest, statuscode.LACKFILEPATH, nil)
 		return
 	}
-	path_ := string(pb)
 
-	if _, err_ := os.Stat(path_); err_ != nil {
+	if _, err := os.Stat(file); err != nil {
 		// do nothing
 	} else {
-		os.Remove(path_)
+		if err = os.Remove(file); err != nil {
+			appG.Response(http.StatusOK, statuscode.DELFILEERROR, nil)
+			return
+		}
 	}
 
+	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
+	return
+}
+
+func Rename(c *gin.Context) {
+	appG := app.Gin{C: c}
+
+	old := c.PostForm("old")
+	new_ := c.PostForm("new")
+
+	if _, err := os.Stat(old); err != nil {
+		appG.Response(http.StatusBadRequest, statuscode.NOTEXISTSFILE, nil)
+		return
+	}
+	if err := os.Rename(old, new_); err != nil {
+		appG.Response(http.StatusBadRequest, statuscode.RENAMEERROR, nil)
+		return
+	}
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
 	return
 }

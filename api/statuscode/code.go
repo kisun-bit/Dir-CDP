@@ -14,9 +14,13 @@ const (
 	EXISTSSAMENAMEFILE   = 0x10008
 	WRITEIOFAILED        = 0x10009
 	QUERYRESTOREFAILED   = 0x1000a
-	INITRESTOREFAILED    = 0x0000b
-	STARTESTOREFAILED    = 0x0000c
-	RECORDSERVERFAILED   = 0x0000d
+	INITRESTOREFAILED    = 0x1000b
+	STARTESTOREFAILED    = 0x1000c
+	RECORDSERVERFAILED   = 0x1000d
+	LACKFILEPATH         = 0x1000e
+	NOTEXISTSFILE        = 0x10010
+	RENAMEERROR          = 0x10011
+	DELFILEERROR         = 0x10012
 )
 
 var MSGFlag = map[int]string{
@@ -36,4 +40,8 @@ var MSGFlag = map[int]string{
 	INITRESTOREFAILED:    "初始化恢复任务失败",
 	STARTESTOREFAILED:    "启动恢复任务失败",
 	RECORDSERVERFAILED:   "缓存备份服务地址信息失败",
+	LACKFILEPATH:         "缺少文件路径",
+	NOTEXISTSFILE:        "文件不存在",
+	RENAMEERROR:          "重命名失败",
+	DELFILEERROR:         "删除文件失败",
 }

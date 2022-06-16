@@ -57,10 +57,8 @@ func (w *Walker) SetStop() {
 		}
 	}()
 	if w.isStopped() {
-		logger.Fmt.Infof("%v.SetStop 已禁用路径枚举器", w.String())
 		return
 	}
-	logger.Fmt.Infof("%v.SetStop 正在退出...", w.String())
 	atomic.StoreInt32(w.stopNotify, 1)
 	for {
 		if !w.continueResetWaitGroup() {

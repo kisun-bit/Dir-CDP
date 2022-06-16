@@ -6,7 +6,6 @@ package logic
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +89,7 @@ func initIncrBackupProxy(poolSize, incrQueueSize int) *incrBackupProxy {
 type storage struct {
 	uploadSession string
 	deleteSession string
+	renameSession string
 	s3Client      gos3.S3Client
 	s3Session     *session.Session
 }
@@ -516,6 +516,8 @@ func (c *CDPExecutor) moreInit() (err error) {
 			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.Address, meta.AppPort)
 		c.storage.deleteSession = fmt.Sprintf(
 			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.Address, meta.AppPort)
+		c.storage.renameSession = fmt.Sprintf(
+			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.Address, meta.AppPort)
 		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.uploadSession)
 
 	} else if c.is2s3() {
@@ -962,9 +964,13 @@ func (c *CDPExecutor) startWatchers() (err error) {
 }
 
 func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err error) {
-	fs, e := models.QueryFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
+	if c.storage.deleteSession == meta.UnsetStr {
+		return errors.New("lack address of delete session")
+	}
+
+	fs, e := models.QueryNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
 	if e != nil {
-		logger.Fmt.Errorf("%v.QueryFilesByPath ERR=%v", c.Str(), e)
+		logger.Fmt.Errorf("%v.QueryNoVersionFilesByPath ERR=%v", c.Str(), e)
 	}
 
 	keys := make([]string, 0)
@@ -973,15 +979,10 @@ func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err er
 	}
 
 	for _, file := range funk.UniqString(keys) {
-		if c.storage.deleteSession == meta.UnsetStr {
-			err = errors.New("lack address of delete session")
-			continue
-		}
-		b64 := base64.StdEncoding.EncodeToString([]byte(file))
-		url := fmt.Sprintf("%v/%v", c.storage.deleteSession, b64)
-		resp, e := requests.Post(url)
+		data := requests.Datas{"b64": file}
+		resp, e := requests.Post(c.storage.deleteSession, data)
 		if e != nil {
-			logger.Fmt.Errorf("%v.Post(%v) ERR=%v", c.Str(), url, e)
+			logger.Fmt.Errorf("%v.Post(%v) ERR=%v", c.Str(), c.storage.deleteSession, e)
 			err = e
 			continue
 		}
@@ -991,7 +992,7 @@ func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err er
 		}
 	}
 
-	_ = models.DeleteByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
+	_ = models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
 	return
 }
 
