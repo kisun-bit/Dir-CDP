@@ -25,7 +25,7 @@ type ConfigModelTarget struct {
 	TargetID   int64  `json:"target_id"`
 }
 
-type ConfigModelOneDirMap struct {
+type OneDirMap struct {
 	Origin    string `json:"origin"`
 	Bucket    string `json:"bucket"`
 	Target    string `json:"target"`
@@ -110,7 +110,7 @@ type ConfigModel struct {
 	ExtInfoJson      ConfigModelExtInfo      `gorm:"-"`
 	TimeStrategyJson ConfigModelTimeStrategy `gorm:"-"`
 	TargetJson       ConfigModelTarget       `gorm:"-"`
-	DirsMappingJson  []ConfigModelOneDirMap  `gorm:"-"`
+	DirsMappingJson  []OneDirMap             `gorm:"-"`
 }
 
 func (_ ConfigModel) TableName() string {
@@ -207,7 +207,7 @@ func (c *ConfigModel) UniqDirs() (ods []string) {
 }
 
 func (c *ConfigModel) SpecifyTarget(path string) (origin, bucket, prefix string, err error) {
-	var item ConfigModelOneDirMap
+	var item OneDirMap
 	for _, dm := range c.DirsMappingJson {
 		if strings.HasPrefix(path, dm.Origin) && len(dm.Origin) > len(item.Origin) {
 			item = dm

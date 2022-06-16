@@ -118,3 +118,6 @@ const (
 )
 
 var OneDay = 24 * time.Hour
+
+// 上传/下载文件默认的重试次数
+const DefaultTransferRetryTimes = 5

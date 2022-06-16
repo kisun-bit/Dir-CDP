@@ -21,6 +21,8 @@ const (
 	NOTEXISTSFILE        = 0x10010
 	RENAMEERROR          = 0x10011
 	DELFILEERROR         = 0x10012
+	READIPSCONFERROR     = 0x10013
+	ModifyIPSCONFERROR   = 0x10014
 )
 
 var MSGFlag = map[int]string{
@@ -44,4 +46,6 @@ var MSGFlag = map[int]string{
 	NOTEXISTSFILE:        "文件不存在",
 	RENAMEERROR:          "重命名失败",
 	DELFILEERROR:         "删除文件失败",
+	READIPSCONFERROR:     "读取本地备份服务器IP配置失败",
+	ModifyIPSCONFERROR:   "修改本地备份服务器IP配置失败",
 }

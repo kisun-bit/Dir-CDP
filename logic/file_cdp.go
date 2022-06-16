@@ -104,6 +104,7 @@ type CDPExecutor struct {
 	confObj       *models.ConfigModel
 	taskObj       *models.BackupTaskModel
 	reporter      *Reporter
+	progress      *Progress
 	listFilter    *Grep
 	fbp           *fullBackupProxy
 	ibp           *incrBackupProxy
@@ -200,6 +201,7 @@ func LoadCDP(ip string, conf int64, reload bool) (err error) {
 			return
 		}
 	}
+
 	cdp.reporter = NewReporter(cdp.DBDriver.DB, cdp.confObj.ID, cdp.taskObj.ID, meta.TaskTypeBackup)
 	_ = cdp.reporter.ReportInfo(StepConfigEnable)
 	if !cdp.isReload {
@@ -299,8 +301,11 @@ func (c *CDPExecutor) Start() (ec ErrorCode) {
 			}
 		}()
 	}
+	c.progress = NewProgress(
+		5*time.Second, c.taskObj.ID, c.DBDriver.DB, c.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeBackup)
 
 	go c.monitorStopNotify()
+	go c.progress.Gather()
 	go c.logic()
 
 	// 阻塞
@@ -348,6 +353,7 @@ func (c *CDPExecutor) stop() {
 	}
 	atomic.StoreInt32(c.hangSignal, 1)
 	c.stopBackupProxy()
+	c.progress.Stop()
 }
 
 func (c *CDPExecutor) stopBackupProxy() {
@@ -615,7 +621,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		if c.isStopped() {
 			return
 		}
-		logger.Fmt.Debugf("%v | [监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", c.Str(), fwo.Path)
+		//logger.Fmt.Debugf("%v | [监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", c.Str(), fwo.Path)
 		wg.Add(1)
 		if err = c.uploadOneFile(pool, fwo, wg); err != nil {
 			return
@@ -639,13 +645,13 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, 
 		var err error
 		defer func() {
 			if err == nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLog(StepTemplateScanUpS, fwo.Path)
+				_ = c.reporter.ReportErrWithoutLog(StepFileScanUpS, fwo.Path)
 			} else if err == nil && fwo.Event != meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLog(StepTemplateEventUpS, fwo.Path)
+				_ = c.reporter.ReportErrWithoutLog(StepFileEventUpS, fwo.Path)
 			} else if err != nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLog(StepTemplateScanUpF, fwo.Path, err)
+				_ = c.reporter.ReportErrWithoutLog(StepFileScanUpF, fwo.Path, err)
 			} else {
-				_ = c.reporter.ReportErrWithoutLog(StepTemplateEventUpF, fwo.Path, err)
+				_ = c.reporter.ReportErrWithoutLog(StepFileEventUpF, fwo.Path, err)
 			}
 		}()
 
@@ -689,20 +695,33 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 			c.Str(), ffm.ID, err)
 		return
 	}
+	err = c.uploadWithRetry(ffm, meta.DefaultTransferRetryTimes)
+	return
+}
 
+func (c *CDPExecutor) uploadWithRetry(ffm models.EventFileModel, retry int) (err error) {
 	fp, err := os.Open(ffm.Path)
 	if err != nil {
 		return err
 	}
 	defer fp.Close()
 
-	if c.is2host() {
-		return c.upload2host(ffm, fp)
-	} else if c.is2s3() {
-		return c.upload2s3(ffm, fp)
-	} else {
-		return fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
+	for i := 0; i < retry; i++ {
+		_, _ = fp.Seek(0, io.SeekStart)
+		err = nil
+		if c.is2host() {
+			err = c.upload2host(ffm, fp)
+		} else if c.is2s3() {
+			err = c.upload2s3(ffm, fp)
+		} else {
+			err = fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
+		}
+		if err == nil {
+			return nil
+		}
 	}
+
+	return err
 }
 
 func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err error) {
@@ -728,13 +747,14 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 		return err
 	} else {
 		if resp.StatusCode == http.StatusOK {
+			c.progress.AddNum(1)
+			c.progress.AddSize(ffm.Size)
 			return nil
-		} else {
-			bb, _ := ioutil.ReadAll(resp.Body)
-			logger.Fmt.Errorf("%v.upload2host status-err %v", string(bb))
 		}
+		bb, _ := ioutil.ReadAll(resp.Body)
+		logger.Fmt.Errorf("%v.upload2host status-err %v", string(bb))
+		return nil
 	}
-	return nil
 }
 
 func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err error) {
@@ -753,6 +773,9 @@ func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err er
 	if err != nil {
 		logger.Fmt.Warnf("%v.upload2s3 Unable to upload file %s | %v", c.Str(), ffm.Path, err)
 	}
+
+	c.progress.AddNum(1)
+	c.progress.AddSize(ffm.Size)
 	return
 }
 
@@ -868,9 +891,10 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 			if !c.confObj.EnableVersion && c.is2host() {
 				// 如果备机存在则删除
 				if e := c.deleteFilesInRemote(fwo); e == nil {
-					_ = c.reporter.ReportErrWithoutLog(StepTemplateEventDel, fwo.Path)
+					_ = c.reporter.ReportErrWithoutLog(StepFileEventDel, fwo.Path)
 				} else {
-					_ = c.reporter.ReportErrWithoutLog(StepTemplateEventDelF, fwo.Path, e)
+					_ = c.reporter.ReportErrWithoutLog(StepFileEventDelF, fwo.Path, e)
+					// TODO 记录真正的文件数
 				}
 			}
 		case meta.Win32EventCreate:

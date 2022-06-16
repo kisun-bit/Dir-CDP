@@ -8,6 +8,7 @@ import (
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
 	"github.com/journeymidnight/aws-sdk-go/service/s3"
 	"github.com/journeymidnight/aws-sdk-go/service/s3/s3manager"
+	"github.com/kr/pretty"
 	"github.com/panjf2000/ants/v2"
 	"io"
 	"jingrongshuan/rongan-fnotify/meta"
@@ -28,6 +29,9 @@ type RestoreTask struct {
 	DBDriver       *models.DBProxy
 	keyArgs        *models.RestoreExtInfo
 	filter         *Grep
+	wg             *sync.WaitGroup
+	reporter       *Reporter
+	progress       *Progress
 	queue          chan models.EventFileModel
 	pool           *ants.Pool
 	monitor        *hangEventMonitor
@@ -41,22 +45,38 @@ func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *Resto
 
 	r.DBDriver = dp
 	r.taskObj = task
+	r.wg = new(sync.WaitGroup)
 	r.confObj = new(models.ConfigModel)
+	if *r.confObj, err = models.QueryConfig(r.DBDriver.DB, r.taskObj.ConfID); err != nil {
+		return
+	}
+
 	r.keyArgs = new(models.RestoreExtInfo)
 
 	r.exitNotifyOnce = new(sync.Once)
 	r.stopSignal = new(int32)
 	r.monitor = NewMonitorWithRestore(r)
+	r.reporter = NewReporter(dp.DB, r.confObj.ID, r.taskObj.ID, meta.TaskTypeRestore)
+	_ = r.reporter.ReportInfo(StepInitRestoreTask)
 
-	*r.keyArgs, err = r.taskObj.ExtInfos()
-	if err != nil {
-		return r, err
-	}
-
-	r.queue = make(chan models.EventFileModel, meta.DefaultDRQueueSize)
-	if r.pool, err = NewPoolWithCores(r.keyArgs.Threads); err != nil {
+	if err = r.taskObj.LoadJsonFields(); err != nil {
+		_ = r.reporter.ReportError(StepLoadArgsF, err)
 		return
 	}
+	if err = r.confObj.LoadsJsonFields(dp.DB); err != nil {
+		_ = r.reporter.ReportError(StepLoadArgsF, err)
+		return
+	}
+	_ = r.reporter.ReportInfo(StepLoadArgs)
+
+	r.progress = NewProgress(
+		5*time.Second, r.taskObj.ID, r.DBDriver.DB, r.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeRestore)
+	r.queue = make(chan models.EventFileModel, meta.DefaultDRQueueSize)
+	if r.pool, err = NewPoolWithCores(r.keyArgs.Threads); err != nil {
+		_ = r.reporter.ReportError(StepInitRestorePoolF, err)
+		return
+	}
+	_ = r.reporter.ReportInfo(StepInitRestorePool)
 	return r, nil
 }
 
@@ -69,8 +89,6 @@ func (r *RestoreTask) isStopped() bool {
 }
 
 func (r *RestoreTask) stop() {
-	logger.Fmt.Infof("%v.stop 正在停止恢复", r.Str())
-
 	if r.isStopped() {
 		return
 	}
@@ -108,7 +126,10 @@ func (r *RestoreTask) Start() (err error) {
 }
 
 func (r *RestoreTask) logic() {
-	logger.Fmt.Infof("%v.logic 开始执行恢复逻辑", r.Str())
+	logger.Fmt.Infof("%v.logic TASK_EXT: %v", r.Str(), pretty.Sprint(r.taskObj.ExtInfoJson))
+	defer close(r.queue)
+
+	_ = r.reporter.ReportInfo(StepStartMonitor)
 	go r.monitorStopNotify()
 
 	var err error
@@ -118,23 +139,19 @@ func (r *RestoreTask) logic() {
 		return
 	}
 
+	r.restore()
+
 	if len(r.paramFileset()) != 0 {
+		_ = r.reporter.ReportInfo(StepRestoreByFileset)
 		err = r.restoreByFileset()
 	} else {
+		_ = r.reporter.ReportInfo(StepRestoreByTime)
 		err = r.restoreByTime()
 	}
-	r.restore()
 }
 
 func (r *RestoreTask) initArgs() (err error) {
 	r.filter = NewGrep(r.keyArgs.Include, r.keyArgs.Exclude)
-
-	if *r.confObj, err = models.QueryConfig(r.DBDriver.DB, r.taskObj.ConfID); err != nil {
-		return
-	}
-	if err = r.confObj.LoadsJsonFields(r.DBDriver.DB); err != nil {
-		return
-	}
 	return nil
 }
 
@@ -160,6 +177,10 @@ func (r *RestoreTask) restoreOneSet(path_ string) (err error) {
 		ffm models.EventFileModel
 	)
 
+	if r.isStopped() {
+		return nil
+	}
+
 	dir = strings.HasSuffix(path_, meta.Sep)
 	if dir {
 		if row, err = models.QueryRecursiveFilesIteratorInDir(r.DBDriver.DB, r.taskObj.ConfID, path_); err != nil {
@@ -168,6 +189,9 @@ func (r *RestoreTask) restoreOneSet(path_ string) (err error) {
 		}
 		defer row.Close()
 		for row.Next() {
+			if r.isStopped() {
+				return nil
+			}
 			if err = r.DBDriver.DB.ScanRows(row, &ffm); err != nil {
 				logger.Fmt.Errorf("RestoreTask.restoreOneSet File=%v ScanRows-Err=%v", ffm.Path, err)
 				return err
@@ -182,9 +206,7 @@ func (r *RestoreTask) restoreOneSet(path_ string) (err error) {
 		return err
 	}
 
-	if !r.isStopped() {
-		r.queue <- ffm
-	}
+	r.queue <- ffm
 	return nil
 }
 
@@ -202,6 +224,9 @@ func (r *RestoreTask) restoreByTime() (err error) {
 	defer row.Close()
 
 	for row.Next() {
+		if r.isStopped() {
+			return nil
+		}
 		if err = r.DBDriver.DB.ScanRows(row, &ffm); err != nil {
 			logger.Fmt.Errorf("RestoreTask RestoreByFilterArgs. ScanRows-Err=%v", ffm)
 			return err
@@ -244,53 +269,87 @@ func (r *RestoreTask) download() {
 		url = fmt.Sprintf("http://%v:%v/api/v1/download/", r.confObj.TargetHostJson.Address, meta.AppPort)
 	}
 
+	_ = r.reporter.ReportInfo(StepStartTransfer)
 	for ffm := range r.queue {
+		if r.isStopped() {
+			break
+		}
 		_ = r.pool.Submit(func() {
 			r.downloadOneFile(ffm, s3s, url)
 		})
 	}
 
-	<-r.exitNotify
+	for {
+		if r.pool.Running() != 0 {
+			time.Sleep(5 * time.Second)
+		} else {
+			break
+		}
+	}
+	r.pool.Release()
+	_ = r.reporter.ReportInfo(StepEndTransfer)
+
+	if r.isStopped() {
+		_ = models.EndRestoreTask(r.DBDriver.DB, r.taskObj.ID, false)
+	} else {
+		_ = models.EndRestoreTask(r.DBDriver.DB, r.taskObj.ID, true)
+	}
 }
 
 func (r *RestoreTask) downloadOneFile(ffm models.EventFileModel, s3s *session.Session, url string) {
-	var err error
 	if !r.filter.IsValidByGrep(ffm.Path) {
 		return
 	}
 
-	// TODO 由映射策略匹配到本地路径
-	local := strings.Replace(ffm.Path, "", r.keyArgs.RestoreDir, 1) + meta.IgnoreFlag
+	_ = r._downloadWithRetry(ffm, meta.DefaultTransferRetryTimes, s3s, url)
+}
+
+func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s3s *session.Session, url string) (err error) {
+	var localDir string
+	localDir, _, err = r.taskObj.SpecifyLocalDirAndBucket(ffm.Storage)
+	if err != nil {
+		return
+	}
+
+	var origin string
+	origin, _, _, err = r.confObj.SpecifyTarget(ffm.Path)
+	if err != nil {
+		return
+	}
+
+	local := strings.Replace(ffm.Path, origin, localDir, 1) + meta.IgnoreFlag
 	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
 		return
 	}
 
-	if s3s != nil {
-		downloader := s3manager.NewDownloader(
-			s3s,
-			func(downloader_ *s3manager.Downloader) {
-				downloader_.Concurrency = s3manager.DefaultDownloadConcurrency
-			},
-		)
-		// TODO 由映射策略匹配到桶名称
-		if err = r._downloadFromS3(ffm, target, downloader, ""); err != nil {
+	for i := 0; i < retry; i++ {
+		_, _ = target.Seek(0, io.SeekStart)
+		err = nil
+		if s3s != nil {
+			downloader := s3manager.NewDownloader(
+				s3s,
+				func(downloader_ *s3manager.Downloader) {
+					downloader_.Concurrency = s3manager.DefaultDownloadConcurrency
+				},
+			)
+			err = r._downloadFromS3(ffm, target, downloader, ffm.Bucket)
+		} else if url != meta.UnsetStr {
+			err = r._downloadFromHost(ffm, target, url)
+		}
+		if err == nil {
+			truePath := strings.TrimSuffix(local, meta.IgnoreFlag)
+			if err = os.Rename(local, truePath); err != nil {
+				return
+			}
+			if err = os.Chtimes(truePath, time.Now(), time.Unix(ffm.Time, 0)); err != nil {
+				return
+			}
 			return
 		}
-	} else {
-		if err = r._downloadFromHost(ffm, target, url); err != nil {
-			return
-		}
 	}
-
-	truePath := strings.TrimSuffix(local, meta.IgnoreFlag)
-	if err = os.Rename(local, truePath); err != nil {
-		return
-	}
-	if err = os.Chtimes(truePath, time.Now(), time.Unix(ffm.Time, 0)); err != nil {
-		return
-	}
+	return err
 }
 
 func (r *RestoreTask) _downloadFromS3(
@@ -328,7 +387,6 @@ func (r *RestoreTask) exitWhenErr(code ErrorCode, err error) {
 
 	r.exitNotifyOnce.Do(func() {
 		logger.Fmt.Errorf("%v.exitWhenErr 捕捉到%v, 恢复任务等待退出...", r.Str())
-		close(r.queue)
 		for {
 			if err = models.UpdateRestoreTask(r.DBDriver.DB, r.taskObj.ID, meta.RESTORESERROR); err != nil {
 				logger.Fmt.Warnf("%v.UpdateRestoreTask Err=%v, wait 10s...", r.Str(), err)
@@ -336,6 +394,7 @@ func (r *RestoreTask) exitWhenErr(code ErrorCode, err error) {
 			}
 			break
 		}
+		r.stop()
 		r.exitNotify <- code
 	})
 }

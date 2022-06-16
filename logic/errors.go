@@ -8,6 +8,7 @@ import (
 type ErrorCode int
 
 var (
+	ExitErrcodeSuccuss       ErrorCode = 0x00000
 	ExitErrCodeUserCancel    ErrorCode = 0x00001
 	ExitErrCodeServerConn    ErrorCode = 0x00002
 	ExitErrCodeTargetConn    ErrorCode = 0x00003
@@ -17,6 +18,7 @@ var (
 )
 
 var ErrCodeMap = map[ErrorCode]error{
+	ExitErrcodeSuccuss:       errors.New("任务成功"),
 	ExitErrCodeUserCancel:    errors.New("用户取消"),
 	ExitErrCodeServerConn:    errors.New("备份服务器连接异常"),
 	ExitErrCodeTargetConn:    errors.New("目标存储服务器连接异常"),

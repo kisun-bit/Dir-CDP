@@ -3,10 +3,13 @@ package v1
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/unknwon/com"
+	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/api/app"
 	"jingrongshuan/rongan-fnotify/api/statuscode"
+	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/models"
 	"net/http"
+	"strings"
 )
 
 func Init(c *gin.Context) {
@@ -21,5 +24,23 @@ func Init(c *gin.Context) {
 	}
 
 	logger.Fmt.Infof("[GET] Init | init db from `%v` is ok", ip)
+	app.Resp(c, http.StatusOK, statuscode.SUCCESS, nil)
+}
+
+func ModifyServerIP(c *gin.Context) {
+	old := com.StrTo(c.Param("old")).String()
+	now := com.StrTo(c.Param("new")).String()
+
+	input, err := ioutil.ReadFile(meta.ServerIPsWin)
+	if err != nil {
+		app.Resp(c, http.StatusOK, statuscode.READIPSCONFERROR, nil)
+		return
+	}
+	ips := strings.ReplaceAll(string(input), old, now)
+	err = ioutil.WriteFile(meta.ServerIPsWin, []byte(ips), 0644)
+	if err != nil {
+		app.Resp(c, http.StatusOK, statuscode.ModifyIPSCONFERROR, nil)
+		return
+	}
 	app.Resp(c, http.StatusOK, statuscode.SUCCESS, nil)
 }

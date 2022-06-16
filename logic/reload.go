@@ -103,7 +103,7 @@ func reloadTaskFromOneServer(ip string) (err error) {
 	}
 
 	for _, c := range rs {
-		if err = models.FailedRestoreTask(dp.DB, c.ID); err != nil {
+		if err = models.EndRestoreTask(dp.DB, c.ID, false); err != nil {
 			return
 		}
 	}

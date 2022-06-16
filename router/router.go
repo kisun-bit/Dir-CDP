@@ -26,6 +26,8 @@ func InitRouter() *gin.Engine {
 		apiv1.POST("/delete", v1.Delete)
 		// 重命名文件接口
 		apiv1.POST("/rename", v1.Rename)
+		// 服务器IP修正
+		apiv1.POST("/server/:old/:new", v1.ModifyServerIP)
 		// NOTE. 更多接口可用studio中的接口来调度
 	}
 

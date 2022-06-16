@@ -27,11 +27,11 @@ const (
 	LogStatusUnknown string = "O"
 )
 
-// CDP备份期间的状态集
+// CDP备份期间、恢复期间的状态集
 const (
 	StepInitCDP                    = "初始化CDP组件"
-	StepInitArgs                   = "检测备份参数"
-	StepInitArgsF                  = "检测备份参数失败，原因：%v"
+	StepInitArgs                   = "加载备份参数"
+	StepInitArgsF                  = "加载备份参数失败，原因：%v"
 	StepConnDB                     = "连接业务数据库"
 	StepMallocHandle               = "分配任务句柄锁"
 	StepMallocHandleF              = "分配任务句柄锁失败，原因：%v"
@@ -59,7 +59,7 @@ const (
 	StepCDPing2Copying             = "任务由持续保护状态(CDPING)进入基础数据同步状态(COPYING)"
 	StepConfigEnable               = "应用配置"
 	StepConfigDisable              = "禁用配置"
-	StepExitNormal                 = "任务中断完成（因禁用配置、任务重复、句柄锁定时失败导致的中断不予重试）"
+	StepExitNormal                 = "任务中断完成（因禁用配置、句柄锁定失败导致的中断不予重试）"
 	StepExitOccur                  = "检测到内部异常（%v）"
 	StepTaskHang                   = "任务正在中断"
 	StepReloadCDPFinish            = "重启CDP组件完成，等待系统调度"
@@ -67,12 +67,24 @@ const (
 	StepRetryCDPFinish             = "重试完成，开始执行任务"
 	StepRetryCDPMatchSer           = "重试失败，组件运行时未记录备份服务器IP，导致重连数据库异常"
 	StepServerConnErr              = "备份服务器与客户端之间网络连接异常，正在重试...，请稍后"
-	StepTemplateScanUpS            = "基于扫描，文件%s完成同步"
-	StepTemplateEventUpS           = "基于事件，文件%s完成同步"
-	StepTemplateScanUpF            = "基于扫描，文件%s同步失败，原因：%v"
-	StepTemplateEventUpF           = "基于事件，文件%s同步失败，原因：%v"
-	StepTemplateEventDel           = "基于事件，远程文件%s完成删除"
-	StepTemplateEventDelF          = "基于事件，源文件%v的远程文件删除失败，原因：%v"
+	StepFileScanUpS                = "基于扫描，文件%s完成同步"
+	StepFileEventUpS               = "基于事件，文件%s完成同步"
+	StepFileScanUpF                = "基于扫描，文件%s同步失败，原因：%v"
+	StepFileEventUpF               = "基于事件，文件%s同步失败，原因：%v"
+	StepFileEventDel               = "基于事件，远程文件%s完成删除"
+	StepFileEventDelF              = "基于事件，源文件%v的远程文件删除失败，原因：%v"
+	StepInitRestoreTask            = "初始化恢复任务"
+	StepLoadArgs                   = "加载备份参数"
+	StepLoadArgsF                  = "加载备份参数失败，原因：%v"
+	StepInitRestorePool            = "初始化恢复工作池"
+	StepInitRestorePoolF           = "初始化恢复工作池失败，原因：%v"
+	StepRestoreByFileset           = "依据指定文件集恢复"
+	StepRestoreByTime              = "未指定文件集恢复，将匹配过滤参数执行恢复"
+	StepStartTransfer              = "正在传输数据"
+	StepEndTransfer                = "数据传输完毕"
+	StepClearTask                  = "清理并退出任务"
+	//StepFileDownS                  = "文件%v恢复完成"
+	//StepFileDownF                  = "文件%v恢复失败，原因：%v"
 )
 
 type Reporter struct {

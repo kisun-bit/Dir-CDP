@@ -8,6 +8,7 @@ import (
 	"jingrongshuan/rongan-fnotify/tools"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -164,7 +165,11 @@ func (w *Win32Watcher) collectChangeInfo() {
 		info.Event = tools.ConvertToWin32Event(raw.Action)
 		info.Name = name
 
-		if info.Event == meta.Win32EventDelete || info.Event == meta.Win32EventRenameFrom {
+		if !w.isValidDepth(info.Path) {
+			break
+		}
+
+		if w.NeedDelete(info.Event) {
 			fmt.Println(info.Path)
 		} else {
 			fi, err := os.Stat(path)
@@ -196,6 +201,19 @@ func (w *Win32Watcher) collectChangeInfo() {
 			break
 		}
 	}
+}
+
+func (w *Win32Watcher) isValidDepth(path string) bool {
+	if w.depth == -1 {
+		return true
+	}
+	tss := strings.Count(tools.CorrectPathWithPlatform(path, meta.IsWin), meta.Sep)
+	oss := strings.Count(tools.CorrectDirWithPlatform(w.root, meta.IsWin), meta.Sep)
+	return tss-oss <= w.depth
+}
+
+func (w *Win32Watcher) NeedDelete(event meta.Event) bool {
+	return event == meta.Win32EventDelete || event == meta.Win32EventRenameFrom
 }
 
 func (w *Win32Watcher) Str() string {
