@@ -41,13 +41,14 @@ import (
 // fullBackupProxy 全量备份代理
 // 支持基于扫描的多目录递归备份
 type fullBackupProxy struct {
-	walkers            []*Walker
-	counter            *int32 // 计数器信号， 目的是等待所有目录枚举完毕后，关闭枚举通道
-	walkerQueue        chan nt_notify.FileWatchingObj
-	fullPool           *ants.Pool
-	fullWG             *sync.WaitGroup
-	fullQueue          chan models.EventFileModel // 全量数据通道，该通道在全量备份完成后关闭
-	fullQueueCloseOnce *sync.Once
+	walkers              []*Walker
+	counter              *int32 // 计数器信号， 目的是等待所有目录枚举完毕后，关闭枚举通道
+	walkerQueue          chan nt_notify.FileWatchingObj
+	walkerQueueCloseOnce *sync.Once
+	fullPool             *ants.Pool
+	fullWG               *sync.WaitGroup
+	fullQueue            chan models.EventFileModel // 全量数据通道，该通道在全量备份完成后关闭
+	fullQueueCloseOnce   *sync.Once
 }
 
 func initFullBackupProxy(poolSize, fullQueueSize int) *fullBackupProxy {
@@ -56,6 +57,7 @@ func initFullBackupProxy(poolSize, fullQueueSize int) *fullBackupProxy {
 	fbp.fullWG = new(sync.WaitGroup)
 	fbp.fullQueue = make(chan models.EventFileModel, fullQueueSize)
 	fbp.walkerQueue = make(chan nt_notify.FileWatchingObj, meta.DefaultEnumPathChannelSize)
+	fbp.walkerQueueCloseOnce = new(sync.Once)
 	fbp.counter = new(int32)
 	fbp.fullQueueCloseOnce = new(sync.Once)
 	return fbp
@@ -87,33 +89,35 @@ func initIncrBackupProxy(poolSize, incrQueueSize int) *incrBackupProxy {
 
 // storage 目标存储
 type storage struct {
+	// 以下属性仅在目标存储为主机时有效
 	uploadSession string
 	deleteSession string
 	renameSession string
-	s3Client      gos3.S3Client
-	s3Session     *session.Session
+	// 一下属性仅在目标存储为对象存储时有效
+	s3Client  gos3.S3Client
+	s3Session *session.Session
 }
 
 // CDPExecutor 文件级CDP实现
 type CDPExecutor struct {
-	isReload      bool  // 当服务重启时，此属性为True
-	startTs       int64 // 本次持续备份的开始时间
-	handle        string
-	taskLocker    *flock.Flock
-	DBDriver      *models.DBProxy
-	confObj       *models.ConfigModel
-	taskObj       *models.BackupTaskModel
-	reporter      *Reporter
-	progress      *Progress
-	listFilter    *Grep
-	fbp           *fullBackupProxy
-	ibp           *incrBackupProxy
-	storage       *storage
-	monitor       *hangEventMonitor
-	hangSignal    *int32         // 用户禁用/取消信号、异常终止信号
-	notifyErr     chan ErrorCode // 异常记录
-	notifyErrOnce *sync.Once     // 多线程环境下仅报告一次异常记录
-	localCtxDB    *bolt.DB       // TODO 本地用于记录服务关键信息的文件数据库
+	isReload      bool                    // 当服务重启时，此属性为True
+	startTs       int64                   // 本次备份的开始时间
+	handle        string                  // 任务句柄
+	taskLocker    *flock.Flock            // 任务句柄锁(文件锁)
+	DBDriver      *models.DBProxy         // 数据库驱动器
+	confObj       *models.ConfigModel     // 配置对象
+	taskObj       *models.BackupTaskModel // 任务对象
+	reporter      *Reporter               // 日志上报器
+	progress      *Progress               // 数据量、文件数完成进度上报器
+	listFilter    *Grep                   // 黑白名单过滤器
+	fbp           *fullBackupProxy        // 全备代理
+	ibp           *incrBackupProxy        // 增量代理
+	storage       *storage                // 目标存储信息
+	monitor       *hangEventMonitor       // 任务中断捕捉器
+	hangSignal    *int32                  // 捕捉用户禁用/取消、任务异常终止的信号
+	notifyErr     chan ErrorCode          // 异常记录
+	notifyErrOnce *sync.Once              // 并发环境下仅报告一次异常记录
+	localCtxDB    *bolt.DB                // TODO 本地用于记录服务关键信息的文件数据库
 }
 
 func initOrResetCDPExecutor(ce *CDPExecutor, config *models.ConfigModel, dp *models.DBProxy) (err error) {
@@ -148,7 +152,6 @@ func NewCDPExecutor(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExec
 }
 
 func NewCDPExecutorWhenReload(config *models.ConfigModel, dp *models.DBProxy) (ce *CDPExecutor, err error) {
-
 	task, err := models.QueryBackupTaskByConfID(dp.DB, config.ID)
 	if err != nil {
 		return nil, fmt.Errorf("reload conf(id=%v) is NULL", config.ID)
@@ -219,7 +222,7 @@ func LoadCDP(ip string, conf int64, reload bool) (err error) {
 }
 
 func (c *CDPExecutor) Str() string {
-	return fmt.Sprintf("<CDP(conf=%v, task=%v)>", c.confObj.ID, c.taskObj.ID)
+	return fmt.Sprintf("<CDP(conf=%v, task=%v, reload=%v)>", c.confObj.ID, c.taskObj.ID, c.isReload)
 }
 
 func (c *CDPExecutor) registerShardingModel() (err error) {
@@ -284,23 +287,25 @@ func (c *CDPExecutor) Start() (ec ErrorCode) {
 	_ = c.reporter.ReportInfo(StepMallocHandle)
 
 	locked, err := c.taskLocker.TryLock()
-	if err != nil {
+	if err != nil || !locked {
+		if err == nil {
+			err = errors.New("locked err")
+		}
 		logger.Fmt.Errorf("%v.taskLocker.TryLock ERR=%v", c.Str(), err)
 		_ = c.reporter.ReportError(StepLockHandleF, err)
 		return ExitErrCodeTaskReplicate
 	}
-	_ = c.reporter.ReportInfo(StepLockHandle)
 
-	if locked {
-		defer func() {
-			if err = c.taskLocker.Unlock(); err != nil {
-				logger.Fmt.Errorf("%v.taskLocker.Unlock ERR=%v", c.Str(), err)
-				_ = c.reporter.ReportError(StepUnLockHandleF, err)
-			} else {
-				_ = c.reporter.ReportInfo(StepUnLockHandle)
-			}
-		}()
-	}
+	// assert locked is true
+	_ = c.reporter.ReportInfo(StepLockHandle)
+	defer func() {
+		if err = c.taskLocker.Unlock(); err != nil {
+			logger.Fmt.Errorf("%v.taskLocker.Unlock ERR=%v", c.Str(), err)
+			_ = c.reporter.ReportError(StepUnLockHandleF, err)
+		} else {
+			_ = c.reporter.ReportInfo(StepUnLockHandle)
+		}
+	}()
 	c.progress = NewProgress(
 		5*time.Second, c.taskObj.ID, c.DBDriver.DB, c.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeBackup)
 
@@ -765,8 +770,12 @@ func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err er
 		},
 	)
 
+	_, bucket, _, err := c.confObj.SpecifyTargetWhenS3(ffm.Path)
+	if err != nil {
+		return err
+	}
 	_, err = uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(ffm.Bucket),
+		Bucket: aws.String(bucket),
 		Key:    aws.String(ffm.Storage),
 		Body:   fp,
 	})
@@ -929,7 +938,7 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 func (c *CDPExecutor) startWalkers() (err error) {
 	logger.Fmt.Infof("%v.startWalkers start walkers...", c.Str())
 	for _, v := range c.confObj.DirsMappingJson {
-		w, e := NewWalker(v.Origin, v.Depth, 1, c.fbp.walkerQueue, c.fbp.counter)
+		w, e := NewWalker(v.LocalOrigin, v.LocalEnabledDepth, 1, c.fbp.walkerQueue, c.fbp.counter)
 		if e != nil {
 			continue
 		}
@@ -944,9 +953,11 @@ func (c *CDPExecutor) startWalkers() (err error) {
 		ticker := time.NewTicker(meta.DefaultRetryTimeInterval)
 		for range ticker.C {
 			if c.isWalkersCompleted() {
-				close(c.fbp.walkerQueue)
-				ticker.Stop()
-				_ = c.reporter.ReportInfo(StepEndWalkers)
+				c.fbp.walkerQueueCloseOnce.Do(func() {
+					close(c.fbp.walkerQueue)
+					ticker.Stop()
+					_ = c.reporter.ReportInfo(StepEndWalkers)
+				})
 			}
 			time.Sleep(5 * time.Second)
 		}
@@ -959,17 +970,17 @@ func (c *CDPExecutor) startWatchers() (err error) {
 
 	watched := make([]string, 0)
 	for _, v := range c.confObj.DirsMappingJson {
-		if funk.InStrings(watched, v.Origin) {
+		if funk.InStrings(watched, v.LocalOrigin) {
 			continue
 		}
-		w, e := nt_notify.NewWatcher(v.Origin, v.Recursion, v.Depth)
+		w, e := nt_notify.NewWatcher(v.LocalOrigin, v.LocalEnableRecursion, v.LocalEnabledDepth)
 		if e != nil {
-			watched = append(watched, v.Origin)
+			watched = append(watched, v.LocalOrigin)
 			continue
 		}
 		wq, e := w.Start()
 		if e != nil {
-			watched = append(watched, v.Origin)
+			watched = append(watched, v.LocalOrigin)
 			continue
 		}
 		c.ibp.watchers = append(c.ibp.watchers, &watcherWrapper{
@@ -1218,11 +1229,10 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 		}
 		ff.Storage = tools.GenerateRemoteHostKey(origin, ff.Path, remote, tools.IsWin(c.confObj.TargetHostJson.Type))
 	} else if c.is2s3() {
-		origin, bucket, prefix, err := c.confObj.SpecifyTarget(ff.Path)
+		origin, _, prefix, err := c.confObj.SpecifyTargetWhenS3(ff.Path)
 		if err != nil {
 			return fm, err
 		}
-		ff.Bucket = bucket
 		ff.Storage = tools.GenerateS3Key(c.confObj.ID, origin, ff.Path, prefix)
 	} else {
 		return fm, errors.New("unsupported target storage")

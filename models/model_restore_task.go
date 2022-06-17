@@ -90,15 +90,15 @@ func (t *RestoreTaskModel) loadExtInfo() (err error) {
 func (t *RestoreTaskModel) SpecifyLocalDirAndBucket(storage string) (local, bucket string, err error) {
 	var item OneDirMap
 	for _, dm := range t.ExtInfoJson.RestoreMap {
-		if strings.HasPrefix(storage, dm.Target) && len(dm.Target) > len(item.Target) {
+		if strings.HasPrefix(storage, dm.TargetPrefixForBucketOrRemote) && len(dm.TargetPrefixForBucketOrRemote) > len(item.TargetPrefixForBucketOrRemote) {
 			item = dm
 		}
 	}
-	if item.Origin == meta.UnsetStr {
+	if item.LocalOrigin == meta.UnsetStr {
 		err = errors.New("failed to match origin path")
 		return
 	}
-	return item.Origin, item.Bucket, err
+	return item.LocalOrigin, item.TargetBucket, err
 }
 
 func IsRestoreCancel(db *gorm.DB, task int64) (_ bool, err error) {

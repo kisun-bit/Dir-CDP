@@ -26,11 +26,12 @@ type ConfigModelTarget struct {
 }
 
 type OneDirMap struct {
-	Origin    string `json:"origin"`
-	Bucket    string `json:"bucket"`
-	Target    string `json:"target"`
-	Recursion bool   `json:"recursion"`
-	Depth     int    `json:"depth"`
+	LocalOrigin                   string `json:"origin"`
+	TargetBucket                  string `json:"bucket"`
+	TargetPrefixForBucketOrRemote string `json:"target"`
+	TargetVolume                  string `json:"volume"`
+	LocalEnableRecursion          bool   `json:"recursion"`
+	LocalEnabledDepth             int    `json:"depth"`
 }
 
 // ConfigModel 用于监控同步配置
@@ -193,7 +194,7 @@ func (c *ConfigModel) loadS3ConfJson(db *gorm.DB) (err error) {
 func (c *ConfigModel) UniqBuckets() (bs []string) {
 	tmp := make([]string, 0)
 	for _, v := range c.DirsMappingJson {
-		tmp = append(tmp, v.Bucket)
+		tmp = append(tmp, v.TargetBucket)
 	}
 	return funk.UniqString(tmp)
 }
@@ -201,27 +202,27 @@ func (c *ConfigModel) UniqBuckets() (bs []string) {
 func (c *ConfigModel) UniqDirs() (ods []string) {
 	tmp := make([]string, 0)
 	for _, v := range c.DirsMappingJson {
-		tmp = append(tmp, v.Origin)
+		tmp = append(tmp, v.LocalOrigin)
 	}
 	return funk.UniqString(tmp)
 }
 
-func (c *ConfigModel) SpecifyTarget(path string) (origin, bucket, prefix string, err error) {
+func (c *ConfigModel) SpecifyTargetWhenS3(path string) (origin, bucket, prefix string, err error) {
 	var item OneDirMap
 	for _, dm := range c.DirsMappingJson {
-		if strings.HasPrefix(path, dm.Origin) && len(dm.Origin) > len(item.Origin) {
+		if strings.HasPrefix(path, dm.LocalOrigin) && len(dm.LocalOrigin) > len(item.LocalOrigin) {
 			item = dm
 		}
 	}
-	if item.Origin == meta.UnsetStr {
+	if item.LocalOrigin == meta.UnsetStr {
 		err = errors.New("failed to match origin path")
 		return
 	}
-	return item.Origin, item.Bucket, item.Target, err
+	return item.LocalOrigin, item.TargetBucket, item.TargetPrefixForBucketOrRemote, err
 }
 
 func (c *ConfigModel) SpecifyTargetWhenHost(path string) (origin, remote string, err error) {
-	o, _, p, e := c.SpecifyTarget(path)
+	o, _, p, e := c.SpecifyTargetWhenS3(path)
 	if err = e; err != nil {
 		return
 	}

@@ -198,5 +198,5 @@ func (w *Walker) dirListObjs(dir string) []os.FileInfo {
 }
 
 func (w *Walker) String() string {
-	return fmt.Sprintf("<walkers: Root(%s) Depth(%d) Threads(%d)>", w.Root, w.Depth, w.ThreadSize)
+	return fmt.Sprintf("<walkers: Root(%s) LocalEnabledDepth(%d) Threads(%d)>", w.Root, w.Depth, w.ThreadSize)
 }

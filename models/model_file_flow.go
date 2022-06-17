@@ -34,9 +34,10 @@ CREATE TABLE IF NOT EXISTS "fsnotify"."event_file" (
         "version" TEXT COLLATE "pg_catalog"."default" NOT NULL,
         "parent" TEXT COLLATE "pg_catalog"."default" NOT NULL,
         "storage" TEXT COLLATE "pg_catalog"."default" NOT NULL,
-		"bucket" Text COLLATE "pg_catalog"."default",
         "status" VARCHAR ( 16 ) COLLATE "pg_catalog"."default",
         "tag" VARCHAR ( 32 ) COLLATE "pg_catalog"."default",
+        "checksum" TEXT COLLATE "pg_catalog"."default",
+        "ext_info" Text COLLATE "pg_catalog"."default",
         CONSTRAINT "event_file_pkey" PRIMARY KEY ( "id" )
 );
 ALTER TABLE "fsnotify"."event_file" OWNER TO "postgres";
@@ -57,7 +58,7 @@ type EventFileModel struct {
 	Tag     string // 若启动版本，该处值为时间标签（20220101094423）
 	Parent  string // 父目录
 	Status  string // 状态，WATCHED(被监控到)|SYNCING(正在上传)|ERROR|FINISHED
-	Bucket  string // 目标桶，仅目标为s3时，该字段才有值
+	Ext     string `json:"ext_info"` // 扩展字段
 	Storage string // 存储路径
 }
 

@@ -16,6 +16,7 @@ import (
 	"jingrongshuan/rongan-fnotify/tools"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,6 @@ type RestoreTask struct {
 	confObj        *models.ConfigModel
 	taskObj        *models.RestoreTaskModel
 	DBDriver       *models.DBProxy
-	keyArgs        *models.RestoreExtInfo
 	filter         *Grep
 	wg             *sync.WaitGroup
 	reporter       *Reporter
@@ -51,8 +51,6 @@ func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *Resto
 		return
 	}
 
-	r.keyArgs = new(models.RestoreExtInfo)
-
 	r.exitNotifyOnce = new(sync.Once)
 	r.stopSignal = new(int32)
 	r.monitor = NewMonitorWithRestore(r)
@@ -72,7 +70,10 @@ func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *Resto
 	r.progress = NewProgress(
 		5*time.Second, r.taskObj.ID, r.DBDriver.DB, r.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeRestore)
 	r.queue = make(chan models.EventFileModel, meta.DefaultDRQueueSize)
-	if r.pool, err = NewPoolWithCores(r.keyArgs.Threads); err != nil {
+	if r.taskObj.ExtInfoJson.Threads <= 0 {
+		r.taskObj.ExtInfoJson.Threads = runtime.NumCPU()
+	}
+	if r.pool, err = NewPoolWithCores(r.taskObj.ExtInfoJson.Threads); err != nil {
 		_ = r.reporter.ReportError(StepInitRestorePoolF, err)
 		return
 	}
@@ -96,25 +97,25 @@ func (r *RestoreTask) stop() {
 }
 
 func (r *RestoreTask) paramFileset() (fs []string) {
-	if r.keyArgs.Fileset == "" {
+	if r.taskObj.ExtInfoJson.Fileset == "" {
 		return
 	}
-	return strings.Split(r.keyArgs.Fileset, meta.SplitFlag)
+	return strings.Split(r.taskObj.ExtInfoJson.Fileset, meta.SplitFlag)
 }
 
 func (r *RestoreTask) paramStartTime() *time.Time {
-	if r.keyArgs.Starttime == "" {
+	if r.taskObj.ExtInfoJson.Starttime == "" {
 		return nil
 	}
-	t_ := tools.String2Time(r.keyArgs.Starttime)
+	t_ := tools.String2Time(r.taskObj.ExtInfoJson.Starttime)
 	return &t_
 }
 
 func (r *RestoreTask) paramEndTime() *time.Time {
-	if r.keyArgs.Endtime == "" {
+	if r.taskObj.ExtInfoJson.Endtime == "" {
 		return nil
 	}
-	t_ := tools.String2Time(r.keyArgs.Endtime)
+	t_ := tools.String2Time(r.taskObj.ExtInfoJson.Endtime)
 	return &t_
 }
 
@@ -151,7 +152,7 @@ func (r *RestoreTask) logic() {
 }
 
 func (r *RestoreTask) initArgs() (err error) {
-	r.filter = NewGrep(r.keyArgs.Include, r.keyArgs.Exclude)
+	r.filter = NewGrep(r.taskObj.ExtInfoJson.Include, r.taskObj.ExtInfoJson.Exclude)
 	return nil
 }
 
@@ -312,7 +313,7 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 	}
 
 	var origin string
-	origin, _, _, err = r.confObj.SpecifyTarget(ffm.Path)
+	origin, _, _, err = r.confObj.SpecifyTargetWhenS3(ffm.Path)
 	if err != nil {
 		return
 	}
@@ -322,6 +323,11 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 	if err != nil {
 		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
 		return
+	}
+
+	_, bucket, _, err := r.confObj.SpecifyTargetWhenS3(ffm.Path)
+	if err != nil {
+		return err
 	}
 
 	for i := 0; i < retry; i++ {
@@ -334,7 +340,7 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 					downloader_.Concurrency = s3manager.DefaultDownloadConcurrency
 				},
 			)
-			err = r._downloadFromS3(ffm, target, downloader, ffm.Bucket)
+			err = r._downloadFromS3(ffm, target, downloader, bucket)
 		} else if url != meta.UnsetStr {
 			err = r._downloadFromHost(ffm, target, url)
 		}
