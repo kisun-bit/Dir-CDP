@@ -151,12 +151,12 @@ func ExistedHistoryVersionFile(db *gorm.DB, conf int64, path string) bool {
 }
 
 func DeleteByPath(db *gorm.DB, conf int64, path string) (err error) {
-	sql_ := fmt.Sprintf(`DELETE * FROM %v WHERE path='%v'`, _eventFileTable(conf), path)
+	sql_ := fmt.Sprintf(`DELETE FROM %v WHERE path='%v'`, _eventFileTable(conf), path)
 	return db.Exec(sql_).Error
 }
 
 func DeleteNoVersionFilesByPath(db *gorm.DB, conf int64, path string) (err error) {
-	sql_ := fmt.Sprintf(`DELETE * FROM %v WHERE path='%v' AND tag=''`, _eventFileTable(conf), path)
+	sql_ := fmt.Sprintf(`DELETE FROM %v WHERE path='%v' AND tag=''`, _eventFileTable(conf), path)
 	return db.Exec(sql_).Error
 }
 

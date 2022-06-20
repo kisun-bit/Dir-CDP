@@ -644,7 +644,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 	if c.taskObj.Status == meta.CDPCOPYING {
 		err = c.convertCopying2CDPing()
 	} else if c.taskObj.Status == meta.CDPCDPING {
-		_ = c.reporter.ReportInfo(StepCopying2CDPing)
+		_ = c.reporter.ReportInfo(StepAlreadyCDPing)
 	} else {
 		err = errors.New("can't go from state `CDPUNSTART` to state `CDPCDPING`")
 	}
@@ -1020,6 +1020,7 @@ func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err er
 	}
 
 	for _, file := range funk.UniqString(keys) {
+		logger.Fmt.Infof("%v.deleteFilesInRemote delete %v related %v", c.Str(), file, fwo.Path)
 		data := requests.Datas{"b64": file}
 		resp, e := requests.Post(c.storage.deleteSession, data)
 		if e != nil {
@@ -1033,8 +1034,7 @@ func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err er
 		}
 	}
 
-	_ = models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
-	return
+	return models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
 }
 
 func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.FileWatchingObj, full bool) (err error) {

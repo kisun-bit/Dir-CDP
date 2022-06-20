@@ -44,8 +44,8 @@ func Upload(c *gin.Context) {
 			return
 		}
 		_, err = io.Copy(dst, part)
+		dst.Close()
 		if err != nil {
-			dst.Close()
 			appG.Response(http.StatusBadRequest, statuscode.WRITEIOFAILED, nil)
 			return
 		}
@@ -94,7 +94,8 @@ func Delete(c *gin.Context) {
 		// do nothing
 	} else {
 		if err = os.Remove(file); err != nil {
-			appG.Response(http.StatusOK, statuscode.DELFILEERROR, nil)
+			logger.Fmt.Warnf("remove `%v` failed ERR=%v", file, err)
+			appG.Response(http.StatusBadRequest, statuscode.DELFILEERROR, nil)
 			return
 		}
 	}
