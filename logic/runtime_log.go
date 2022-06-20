@@ -84,8 +84,6 @@ const (
 	StepStartTransfer              = "正在传输数据"
 	StepEndTransfer                = "数据传输完毕"
 	StepClearTask                  = "清理并退出任务"
-	//StepFileDownS                  = "文件%v恢复完成"
-	//StepFileDownF                  = "文件%v恢复失败，原因：%v"
 )
 
 type Reporter struct {
@@ -109,37 +107,37 @@ func (re *Reporter) Str() string {
 }
 
 func (re *Reporter) ReportInfo(format string, a ...interface{}) (err error) {
-	return re.info(format, true, a...)
+	return re.info("", format, true, a...)
 }
 
 func (re *Reporter) ReportError(format string, a ...interface{}) (err error) {
-	return re.error(format, true, a...)
+	return re.error("", format, true, a...)
 }
 
-func (re *Reporter) ReportInfoWithoutLog(format string, a ...interface{}) (err error) {
-	return re.info(format, false, a...)
+func (re *Reporter) ReportInfoWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+	return re.info(key, format, false, a...)
 }
 
-func (re *Reporter) ReportErrWithoutLog(format string, a ...interface{}) (err error) {
-	return re.error(format, false, a...)
+func (re *Reporter) ReportErrWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+	return re.error(key, format, false, a...)
 }
 
-func (re *Reporter) info(format string, log bool, a ...interface{}) (err error) {
+func (re *Reporter) info(key, format string, log bool, a ...interface{}) (err error) {
 	message := fmt.Sprintf(format, a...)
 	if log {
 		logger.Fmt.Infof("%s.info >>>>>> %s", re.Str(), message)
 	}
 	return models.NewLog(
 		re.DB, re.Conf, re.Task,
-		string(re.Type), "", LogStatusRun, message, "{}", LogLevelInfo)
+		string(re.Type), key, LogStatusRun, message, "{}", LogLevelInfo)
 }
 
-func (re *Reporter) error(format string, log bool, a ...interface{}) (err error) {
+func (re *Reporter) error(key, format string, log bool, a ...interface{}) (err error) {
 	message := fmt.Sprintf(format, a...)
 	if log {
 		logger.Fmt.Infof("%s.error >>>>>> %s", re.Str(), message)
 	}
 	return models.NewLog(
 		re.DB, re.Conf, re.Task,
-		string(re.Type), "", LogStatusRun, message, "{}", LogLevelInfo)
+		string(re.Type), key, LogStatusRun, message, "{}", LogLevelInfo)
 }

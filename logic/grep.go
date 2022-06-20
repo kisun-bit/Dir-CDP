@@ -2,10 +2,9 @@ package logic
 
 import (
 	"github.com/ryanuber/go-glob"
+	"jingrongshuan/rongan-fnotify/meta"
 	"strings"
 )
-
-const SEQ = "@JRSA@"
 
 // listFilter 实现基于文件路径的黑白名单过滤
 type Grep struct {
@@ -16,10 +15,10 @@ type Grep struct {
 func NewGrep(include, exclude string) *Grep {
 	g := new(Grep)
 	if strings.TrimSpace(include) != "" {
-		g.Include = strings.Split(include, SEQ)
+		g.Include = strings.Split(include, meta.SplitFlag)
 	}
 	if strings.TrimSpace(exclude) != "" {
-		g.Include = strings.Split(exclude, SEQ)
+		g.Include = strings.Split(exclude, meta.SplitFlag)
 	}
 	return g
 }

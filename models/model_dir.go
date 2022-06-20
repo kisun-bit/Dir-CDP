@@ -78,9 +78,9 @@ func CreateDirIfNotExists(db *gorm.DB, conf int64, path, ext string) (err error)
 	return db.Exec(sql).Error
 }
 
-func QueryDirByPath(db *gorm.DB, conf int64, path string) (d EventDirModel, err error) {
-	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path='%v'`,
-		_eventDirTable(conf), strings.ReplaceAll(path, `'`, `''`))
-	err = db.Raw(sql_).Scan(&d).Error
-	return
-}
+//func QueryDirByPath(db *gorm.DB, conf int64, path string) (d EventDirModel, err error) {
+//	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path='%v'`,
+//		_eventDirTable(conf), strings.ReplaceAll(path, `'`, `''`))
+//	err = db.Raw(sql_).Scan(&d).Error
+//	return
+//}

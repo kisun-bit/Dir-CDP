@@ -67,8 +67,8 @@ func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *Resto
 	}
 	_ = r.reporter.ReportInfo(StepLoadArgs)
 
-	r.progress = NewProgress(
-		5*time.Second, r.taskObj.ID, r.DBDriver.DB, r.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeRestore)
+	r.progress = NewProgress(meta.DefaultReportProcessSecs,
+		r.taskObj.ID, r.DBDriver.DB, r.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeRestore)
 	r.queue = make(chan models.EventFileModel, meta.DefaultDRQueueSize)
 	if r.taskObj.ExtInfoJson.Threads <= 0 {
 		r.taskObj.ExtInfoJson.Threads = runtime.NumCPU()
@@ -267,7 +267,7 @@ func (r *RestoreTask) download() {
 			r.confObj.S3ConfJson.SSL,
 			r.confObj.S3ConfJson.Style == "path")
 	} else {
-		url = fmt.Sprintf("http://%v:%v/api/v1/download", r.confObj.TargetHostJson.Address, meta.AppPort)
+		url = fmt.Sprintf("http://%v:%v/api/v1/download", r.confObj.TargetHostJson.Address, meta.DefaultAppPort)
 	}
 
 	_ = r.reporter.ReportInfo(StepStartTransfer)
@@ -282,7 +282,7 @@ func (r *RestoreTask) download() {
 
 	for {
 		if r.pool.Running() != 0 {
-			time.Sleep(5 * time.Second)
+			time.Sleep(meta.DefaultMonitorRestoreHang)
 		} else {
 			break
 		}
@@ -328,7 +328,7 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 	restorePath = tools.CorrectPathWithPlatform(restorePath, meta.IsWin)
 	parent := filepath.Dir(restorePath)
 	if _, e := os.Stat(parent); e != nil {
-		if err = os.MkdirAll(parent, 0666); err != nil {
+		if err = os.MkdirAll(parent, meta.DefaultFileMode); err != nil {
 			return err
 		}
 	}
@@ -355,7 +355,7 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 
 func (r *RestoreTask) _downloadFromS3(
 	ffm models.EventFileModel, local string, downloader *s3manager.Downloader, bucket string) (err error) {
-	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
+	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, meta.DefaultFileMode)
 	if err != nil {
 		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
 		return
@@ -372,7 +372,7 @@ func (r *RestoreTask) _downloadFromS3(
 
 func (r *RestoreTask) _downloadFromHost(
 	ffm models.EventFileModel, local string, url string) (err error) {
-	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
+	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, meta.DefaultFileMode)
 	if err != nil {
 		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
 		return
@@ -416,11 +416,11 @@ func (r *RestoreTask) exitWhenErr(code ErrorCode, err error) {
 	}
 
 	r.exitNotifyOnce.Do(func() {
-		logger.Fmt.Errorf("%v.exitWhenErr 捕捉到%v, 恢复任务等待退出...", r.Str(), err)
+		logger.Fmt.Errorf("%v.exitWhenErr catch%v, waiting to stop...", r.Str(), err)
 		for {
 			if err = models.UpdateRestoreTask(r.DBDriver.DB, r.taskObj.ID, meta.RESTORESERROR); err != nil {
 				logger.Fmt.Warnf("%v.UpdateRestoreTask Err=%v, wait 10s...", r.Str(), err)
-				time.Sleep(10 * time.Second)
+				time.Sleep(meta.RestoreErrFixStatusRetrySecs)
 			}
 			break
 		}

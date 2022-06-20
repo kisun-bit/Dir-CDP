@@ -16,7 +16,7 @@ func RegisterServerInfo(ip string) (err error) {
 		rs  string
 		end int64
 	)
-	fp, err = os.OpenFile(meta.ServerIPsWin, os.O_RDWR|os.O_CREATE, 0666)
+	fp, err = os.OpenFile(meta.ServerIPsWin, os.O_RDWR|os.O_CREATE, meta.DefaultFileMode)
 	if err != nil {
 		logger.Fmt.Errorf("RegisterServerInfo IP(%s) Err=%v", ip, err)
 		return

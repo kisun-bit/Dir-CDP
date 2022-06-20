@@ -306,8 +306,8 @@ func (c *CDPExecutor) Start() (ec ErrorCode) {
 			_ = c.reporter.ReportInfo(StepUnLockHandle)
 		}
 	}()
-	c.progress = NewProgress(
-		5*time.Second, c.taskObj.ID, c.DBDriver.DB, c.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeBackup)
+	c.progress = NewProgress(meta.DefaultReportProcessSecs,
+		c.taskObj.ID, c.DBDriver.DB, c.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeBackup)
 
 	go c.monitorStopNotify()
 	go c.progress.Gather()
@@ -524,11 +524,11 @@ func (c *CDPExecutor) moreInit() (err error) {
 
 	if c.is2host() {
 		c.storage.uploadSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.Address, meta.AppPort)
+			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.Address, meta.DefaultAppPort)
 		c.storage.deleteSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.Address, meta.AppPort)
+			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.Address, meta.DefaultAppPort)
 		c.storage.renameSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.Address, meta.AppPort)
+			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.Address, meta.DefaultAppPort)
 		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.uploadSession)
 
 	} else if c.is2s3() {
@@ -656,13 +656,13 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, 
 		var err error
 		defer func() {
 			if err == nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLog(StepFileScanUpS, fwo.Path)
+				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileScanUpS, fwo.Path)
 			} else if err == nil && fwo.Event != meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLog(StepFileEventUpS, fwo.Path)
+				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventUpS, fwo.Path)
 			} else if err != nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLog(StepFileScanUpF, fwo.Path, err)
+				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileScanUpF, fwo.Path, err)
 			} else {
-				_ = c.reporter.ReportErrWithoutLog(StepFileEventUpF, fwo.Path, err)
+				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventUpF, fwo.Path, err)
 			}
 		}()
 
@@ -906,9 +906,9 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 			if !c.confObj.EnableVersion && c.is2host() {
 				// 如果备机存在则删除
 				if e := c.deleteFilesInRemote(fwo); e == nil {
-					_ = c.reporter.ReportErrWithoutLog(StepFileEventDel, fwo.Path)
+					_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventDel, fwo.Path)
 				} else {
-					_ = c.reporter.ReportErrWithoutLog(StepFileEventDelF, fwo.Path, e)
+					_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventDelF, fwo.Path, e)
 					// TODO 记录真正的文件数
 				}
 			}
@@ -944,7 +944,7 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 func (c *CDPExecutor) startWalkers() (err error) {
 	logger.Fmt.Infof("%v.startWalkers start walkers...", c.Str())
 	for _, v := range c.confObj.DirsMappingJson {
-		w, e := NewWalker(v.LocalOrigin, v.LocalEnabledDepth, 1, c.fbp.walkerQueue, c.fbp.counter)
+		w, e := NewWalker(v.LocalOrigin, v.LocalEnabledDepth, meta.DefaultWalkerCores, c.fbp.walkerQueue, c.fbp.counter)
 		if e != nil {
 			continue
 		}
@@ -965,7 +965,7 @@ func (c *CDPExecutor) startWalkers() (err error) {
 					_ = c.reporter.ReportInfo(StepEndWalkers)
 				})
 			}
-			time.Sleep(5 * time.Second)
+			time.Sleep(meta.DefaultCloseWalkerInterval)
 		}
 	}()
 	return
@@ -1268,12 +1268,12 @@ func (c *CDPExecutor) putFileEventWhenTimeout(w *watcherWrapper) {
 			if c.isStopped() {
 				return
 			}
-			time.Sleep(5 * time.Second)
+			time.Sleep(meta.DefaultTailEventHandleSecs)
 			if fwo, t, ok = w.watcherPatch.Load(); !ok {
 				continue
 			}
 
-			if time.Now().Unix()-t > 5 {
+			if time.Now().Sub(time.Unix(t, 0)) > meta.DefaultTailEventHandleSecs {
 				if err = c.putFile2FullOrIncrQueue(w, fwo, false); err != nil {
 					logger.Fmt.Errorf("%v.putFile2FullOrIncrQueue `%v` ERR=%v",
 						c.Str(), w.watcher.Str(), err)
@@ -1318,7 +1318,7 @@ func (c *CDPExecutor) createHandle() (handle string, err error) {
 
 	if _, e := os.Stat(meta.HandlerBaseDir); e != nil {
 		logger.Fmt.Infof("%v.createHandle will create handlers base dir `%v`", c.Str(), meta.HandlerBaseDir)
-		_ = os.MkdirAll(meta.HandlerBaseDir, 0666)
+		_ = os.MkdirAll(meta.HandlerBaseDir, meta.DefaultFileMode)
 	}
 
 	hp := c.handlePath(tex.Handler)

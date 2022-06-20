@@ -1,9 +1,6 @@
 package meta
 
-import (
-	"os"
-	"time"
-)
+import "time"
 
 // 任务类型
 type TaskType string
@@ -77,33 +74,6 @@ const (
 	CDPCDPING  = "CDPING"
 )
 
-// 路径分割符
-const Sep = string(os.PathSeparator)
-
-// CDP 触发方式
-const TriggerMan = 1
-
-// 字符串拼接的断点标记
-const SplitFlag = "@jrsa@"
-
-// 备份服务器IP地址信息（可能存在多个）
-const ServerIPsWin = `C:\rongan\rongan-fnotify\server.ips`
-
-// 备份过程出错，记录错误上下文的文件
-const ServerCtxWin = `C:\rongan\rongan-fnotify\server_ctx.db`
-
-// 备份过程的锁文件目录
-const HandlerBaseDir = `C:\rongan\rongan-fnotify\handles\`
-
-// 文件备份/恢复通道的默认缓冲区大小
-const DefaultDRQueueSize = 100
-
-// 重试间隔时间
-var DefaultRetryTimeInterval = 5 * time.Second
-
-// 基于扫描时枚举路径的默认通道缓存
-const DefaultEnumPathChannelSize = 10
-
 const (
 	UnsetInt = -1
 	UnsetStr = ""
@@ -118,9 +88,3 @@ const (
 )
 
 var OneDay = 24 * time.Hour
-
-// 上传/下载文件默认的重试次数
-const DefaultTransferRetryTimes = 5
-
-// 组件重启后，多久开始拉起失败任务
-const DefaultReloadStartDuration = 5 * time.Second

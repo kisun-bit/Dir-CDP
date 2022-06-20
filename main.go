@@ -12,15 +12,15 @@ import (
 )
 
 func StartHTTPService() (err error) {
-	gin.SetMode(meta.AppMode)
+	gin.SetMode(meta.DefaultAppMode)
 	routersInit := router.InitRouter()
-	endpoint := fmt.Sprintf(":%d", meta.AppPort)
+	endpoint := fmt.Sprintf(":%d", meta.DefaultAppPort)
 
 	server := http.Server{
 		Addr:           endpoint,
 		Handler:        routersInit,
-		ReadTimeout:    meta.AppReadTimeout,
-		WriteTimeout:   meta.AppWriteTimeout,
+		ReadTimeout:    meta.DefaultAppReadTimeout,
+		WriteTimeout:   meta.DefaultAppWriteTimeout,
 		MaxHeaderBytes: 1 << 20,
 	}
 	logging.Logger.Fmt.Infof("start rongan-fnotify service listening %s", endpoint)
@@ -50,7 +50,7 @@ func StartReloadTask() {
 // @license.url http://www.apache.org/licenses/LICENSE-2.0.html
 
 // @host 0.0.0.0
-// @BasePath C:\rongan\fnotify
+// @BasePath C:\rongan\fsnotify
 func main() {
 	var err error
 
