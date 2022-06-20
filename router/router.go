@@ -17,11 +17,11 @@ func InitRouter() *gin.Engine {
 		// 启用监控配置
 		apiv1.GET("/config/:ip/:id/enable", v1.EnableCDPConfig)
 		// 开始恢复任务
-		apiv1.GET("/restore/:id/start", v1.StartRestore)
+		apiv1.GET("/restore/:ip/:id/start", v1.StartRestore)
 		// 上传文件接口
 		apiv1.POST("/upload", v1.Upload)
 		// 下载文件接口
-		apiv1.POST("/download/:b64", v1.Download)
+		apiv1.POST("/download", v1.Download)
 		// 删除文件接口
 		apiv1.POST("/delete", v1.Delete)
 		// 重命名文件接口

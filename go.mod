@@ -6,6 +6,7 @@ require (
 	github.com/asmcos/requests v0.0.0-20210319030608-c839e8ae4946
 	github.com/astaxie/beego v1.12.3
 	github.com/boltdb/bolt v1.3.1
+	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
 	github.com/gin-gonic/gin v1.7.7
 	github.com/go-openapi/spec v0.20.6 // indirect

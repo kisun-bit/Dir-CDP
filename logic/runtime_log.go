@@ -54,6 +54,7 @@ const (
 	StepEndWatchers                = "文件事件监控器检测到内部异常，已退出"
 	StepCloseFullQueue             = "关闭全量扫描通道"
 	StepCloseIncrQueue             = "关闭监控事件通道"
+	StepAlreadyCDPing              = "任务状态不做变更，已处于持续保护状态（CDPING）"
 	StepCopying2CDPing             = "任务由基础数据同步状态(COPYING)进入持续保护状态(CDPING)"
 	StepUnStart2Copying            = "任务由未启用状态(UNSTART)进入基础数据同步状态(COPYING)"
 	StepCDPing2Copying             = "任务由持续保护状态(CDPING)进入基础数据同步状态(COPYING)"

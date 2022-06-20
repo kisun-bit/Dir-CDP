@@ -56,15 +56,24 @@ type RestoreTaskModel struct {
 	ExtInfoJson RestoreExtInfo `gorm:"-"`
 }
 
+type RestoreDirMap struct {
+	LocalDir                       string `json:"origin"`    // 本地恢复目录
+	StorageBucket                  string `json:"bucket"`    // 目标桶
+	StoragePrefixForBucketOrRemote string `json:"target"`    // 目标存储的前缀、目录
+	StorageVolume                  string `json:"volume"`    // 目标卷
+	LocalEnableRecursion           bool   `json:"recursion"` // 是否支持递归
+	LocalEnabledDepth              int    `json:"depth"`     // 指定备恢复深度
+}
+
 type RestoreExtInfo struct {
-	RestoreMap []OneDirMap `json:"restore_map"`
-	Fileset    string      `json:"fileset"`
-	Starttime  string      `json:"starttime"`
-	Endtime    string      `json:"endtime"`
-	Include    string      `json:"include"`
-	Exclude    string      `json:"exclude"`
-	WhenSame   string      `json:"when_same"`
-	Threads    int         `json:"threads"`
+	RestoreMap []RestoreDirMap `json:"restore_map"`
+	Fileset    string          `json:"fileset"`
+	Starttime  string          `json:"starttime"`
+	Endtime    string          `json:"endtime"`
+	Include    string          `json:"include"`
+	Exclude    string          `json:"exclude"`
+	WhenSame   string          `json:"when_same"`
+	Threads    int             `json:"threads"`
 }
 
 func (_ RestoreTaskModel) TableName() string {
@@ -88,26 +97,26 @@ func (t *RestoreTaskModel) loadExtInfo() (err error) {
 }
 
 func (t *RestoreTaskModel) SpecifyLocalDirAndBucket(storage string) (local, bucket string, err error) {
-	var item OneDirMap
+	var item RestoreDirMap
 	for _, dm := range t.ExtInfoJson.RestoreMap {
-		if strings.HasPrefix(storage, dm.TargetPrefixForBucketOrRemote) && len(dm.TargetPrefixForBucketOrRemote) > len(item.TargetPrefixForBucketOrRemote) {
+		if strings.HasPrefix(storage, dm.StoragePrefixForBucketOrRemote) && len(dm.StoragePrefixForBucketOrRemote) > len(item.StoragePrefixForBucketOrRemote) {
 			item = dm
 		}
 	}
-	if item.LocalOrigin == meta.UnsetStr {
-		err = errors.New("failed to match origin path")
+	if item.LocalDir == meta.UnsetStr {
+		err = errors.New("failed to match storage address")
 		return
 	}
-	return item.LocalOrigin, item.TargetBucket, err
+	return item.LocalDir, item.StorageBucket, err
 }
 
-func IsRestoreCancel(db *gorm.DB, task int64) (_ bool, err error) {
+func IsRestoreEnable(db *gorm.DB, task int64) (_ bool, err error) {
 	var c RestoreTaskModel
 	r := db.Model(&RestoreTaskModel{}).Where("id = ?", task).Take(&c)
 	if r.Error != nil {
 		return false, r.Error
 	}
-	return c.Cancel, r.Error
+	return !c.Cancel, r.Error
 }
 
 func QueryRestoreTaskByID(db *gorm.DB, task int64) (t RestoreTaskModel, err error) {

@@ -46,7 +46,7 @@ func (h *hangEventMonitor) monitor() {
 				ok, err = models.IsEnable(
 					h.CDPExecutorObj().DBDriver.DB, h.CDPExecutorObj().confObj.ID)
 			} else if h.type_ == meta.TaskTypeRestore {
-				ok, err = models.IsRestoreCancel(
+				ok, err = models.IsRestoreEnable(
 					h.RestoreObj().DBDriver.DB, h.RestoreObj().taskObj.ID)
 			}
 
@@ -93,5 +93,8 @@ func (h *hangEventMonitor) RestoreObj() *RestoreTask {
 }
 
 func (h *hangEventMonitor) Str() string {
-	return fmt.Sprintf("%v.<hangEventMonitor-Thread>", h.CDPExecutorObj().Str())
+	if h.type_ == meta.TaskTypeBackup {
+		return fmt.Sprintf("%v.<hangEventMonitor-Thread>", h.CDPExecutorObj().Str())
+	}
+	return fmt.Sprintf("%v.<hangEventMonitor-Thread>", h.RestoreObj().Str())
 }

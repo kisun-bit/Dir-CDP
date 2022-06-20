@@ -25,13 +25,13 @@ type ConfigModelTarget struct {
 	TargetID   int64  `json:"target_id"`
 }
 
-type OneDirMap struct {
-	LocalOrigin                   string `json:"origin"`
-	TargetBucket                  string `json:"bucket"`
-	TargetPrefixForBucketOrRemote string `json:"target"`
-	TargetVolume                  string `json:"volume"`
-	LocalEnableRecursion          bool   `json:"recursion"`
-	LocalEnabledDepth             int    `json:"depth"`
+type BackupDirMap struct {
+	LocalOrigin                    string `json:"origin"`    // 本地备份源目录
+	StorageBucket                  string `json:"bucket"`    // 目标桶
+	StoragePrefixForBucketOrRemote string `json:"target"`    // 目标存储的前缀、目录
+	StorageVolume                  string `json:"volume"`    // 目标卷
+	LocalEnableRecursion           bool   `json:"recursion"` // 是否支持递归
+	LocalEnabledDepth              int    `json:"depth"`     // 指定备份深度
 }
 
 // ConfigModel 用于监控同步配置
@@ -111,7 +111,7 @@ type ConfigModel struct {
 	ExtInfoJson      ConfigModelExtInfo      `gorm:"-"`
 	TimeStrategyJson ConfigModelTimeStrategy `gorm:"-"`
 	TargetJson       ConfigModelTarget       `gorm:"-"`
-	DirsMappingJson  []OneDirMap             `gorm:"-"`
+	DirsMappingJson  []BackupDirMap          `gorm:"-"`
 }
 
 func (_ ConfigModel) TableName() string {
@@ -194,7 +194,7 @@ func (c *ConfigModel) loadS3ConfJson(db *gorm.DB) (err error) {
 func (c *ConfigModel) UniqBuckets() (bs []string) {
 	tmp := make([]string, 0)
 	for _, v := range c.DirsMappingJson {
-		tmp = append(tmp, v.TargetBucket)
+		tmp = append(tmp, v.StorageBucket)
 	}
 	return funk.UniqString(tmp)
 }
@@ -207,8 +207,8 @@ func (c *ConfigModel) UniqDirs() (ods []string) {
 	return funk.UniqString(tmp)
 }
 
-func (c *ConfigModel) SpecifyTargetWhenS3(path string) (origin, bucket, prefix string, err error) {
-	var item OneDirMap
+func (c *ConfigModel) SpecifyTarget(path string) (origin, bucket, volume, prefix string, err error) {
+	var item BackupDirMap
 	for _, dm := range c.DirsMappingJson {
 		if strings.HasPrefix(path, dm.LocalOrigin) && len(dm.LocalOrigin) > len(item.LocalOrigin) {
 			item = dm
@@ -218,11 +218,11 @@ func (c *ConfigModel) SpecifyTargetWhenS3(path string) (origin, bucket, prefix s
 		err = errors.New("failed to match origin path")
 		return
 	}
-	return item.LocalOrigin, item.TargetBucket, item.TargetPrefixForBucketOrRemote, err
+	return item.LocalOrigin, item.StorageBucket, item.StorageVolume, item.StoragePrefixForBucketOrRemote, err
 }
 
 func (c *ConfigModel) SpecifyTargetWhenHost(path string) (origin, remote string, err error) {
-	o, _, p, e := c.SpecifyTargetWhenS3(path)
+	o, _, _, p, e := c.SpecifyTarget(path)
 	if err = e; err != nil {
 		return
 	}

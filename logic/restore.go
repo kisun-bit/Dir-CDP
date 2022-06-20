@@ -2,7 +2,6 @@ package logic
 
 import (
 	"database/sql"
-	"encoding/base64"
 	"fmt"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
@@ -16,6 +15,7 @@ import (
 	"jingrongshuan/rongan-fnotify/tools"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -267,7 +267,7 @@ func (r *RestoreTask) download() {
 			r.confObj.S3ConfJson.SSL,
 			r.confObj.S3ConfJson.Style == "path")
 	} else {
-		url = fmt.Sprintf("http://%v:%v/api/v1/download/", r.confObj.TargetHostJson.Address, meta.AppPort)
+		url = fmt.Sprintf("http://%v:%v/api/v1/download", r.confObj.TargetHostJson.Address, meta.AppPort)
 	}
 
 	_ = r.reporter.ReportInfo(StepStartTransfer)
@@ -295,6 +295,7 @@ func (r *RestoreTask) download() {
 	} else {
 		_ = models.EndRestoreTask(r.DBDriver.DB, r.taskObj.ID, true)
 	}
+	_ = r.reporter.ReportInfo(StepClearTask)
 }
 
 func (r *RestoreTask) downloadOneFile(ffm models.EventFileModel, s3s *session.Session, url string) {
@@ -302,36 +303,37 @@ func (r *RestoreTask) downloadOneFile(ffm models.EventFileModel, s3s *session.Se
 		return
 	}
 
-	_ = r._downloadWithRetry(ffm, meta.DefaultTransferRetryTimes, s3s, url)
+	var err error
+	defer r.exitWhenErr(ExitErrCodeOriginErr, err)
+
+	if err = r._downloadWithRetry(ffm, meta.DefaultTransferRetryTimes, s3s, url); err != nil {
+		logger.Fmt.Warnf("%v._downloadWithRetry ERR=%v", r.Str(), err)
+	}
 }
 
 func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s3s *session.Session, url string) (err error) {
-	var localDir string
-	localDir, _, err = r.taskObj.SpecifyLocalDirAndBucket(ffm.Storage)
+	var restoreDir string
+	var backupDir string
+	var storageBucket string
+
+	restoreDir, _, err = r.taskObj.SpecifyLocalDirAndBucket(ffm.Storage)
 	if err != nil {
 		return
 	}
-
-	var origin string
-	origin, _, _, err = r.confObj.SpecifyTargetWhenS3(ffm.Path)
+	backupDir, storageBucket, _, _, err = r.confObj.SpecifyTarget(ffm.Path)
 	if err != nil {
 		return
 	}
-
-	local := strings.Replace(ffm.Path, origin, localDir, 1) + meta.IgnoreFlag
-	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
-		return
-	}
-
-	_, bucket, _, err := r.confObj.SpecifyTargetWhenS3(ffm.Path)
-	if err != nil {
-		return err
+	restorePath := strings.Replace(ffm.Path, backupDir, restoreDir, 1)
+	restorePath = tools.CorrectPathWithPlatform(restorePath, meta.IsWin)
+	parent := filepath.Dir(restorePath)
+	if _, e := os.Stat(parent); e != nil {
+		if err = os.MkdirAll(parent, 0666); err != nil {
+			return err
+		}
 	}
 
 	for i := 0; i < retry; i++ {
-		_, _ = target.Seek(0, io.SeekStart)
 		err = nil
 		if s3s != nil {
 			downloader := s3manager.NewDownloader(
@@ -340,29 +342,27 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 					downloader_.Concurrency = s3manager.DefaultDownloadConcurrency
 				},
 			)
-			err = r._downloadFromS3(ffm, target, downloader, bucket)
+			err = r._downloadFromS3(ffm, restorePath, downloader, storageBucket)
 		} else if url != meta.UnsetStr {
-			err = r._downloadFromHost(ffm, target, url)
+			err = r._downloadFromHost(ffm, restorePath, url)
 		}
 		if err == nil {
-			truePath := strings.TrimSuffix(local, meta.IgnoreFlag)
-			if err = os.Rename(local, truePath); err != nil {
-				return
-			}
-			if err = os.Chtimes(truePath, time.Now(), time.Unix(ffm.Time, 0)); err != nil {
-				return
-			}
-			return
+			_ = os.Chtimes(restorePath, time.Now(), time.Unix(ffm.Time, 0))
 		}
 	}
 	return err
 }
 
 func (r *RestoreTask) _downloadFromS3(
-	ffm models.EventFileModel, local *os.File, downloader *s3manager.Downloader, bucket string) (err error) {
-	defer local.Close()
+	ffm models.EventFileModel, local string, downloader *s3manager.Downloader, bucket string) (err error) {
+	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
+		return
+	}
+	defer target.Close()
 
-	_, err = downloader.Download(local,
+	_, err = downloader.Download(target,
 		&s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(ffm.Storage),
@@ -371,17 +371,41 @@ func (r *RestoreTask) _downloadFromS3(
 }
 
 func (r *RestoreTask) _downloadFromHost(
-	ffm models.EventFileModel, local *os.File, url string) (err error) {
-	defer local.Close()
-
-	url += base64.StdEncoding.EncodeToString([]byte(ffm.Storage))
-	var r_ *http.Response
-	if r_, err = http.Get(url); err != nil {
+	ffm models.EventFileModel, local string, url string) (err error) {
+	target, err := os.OpenFile(local, os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		logger.Fmt.Errorf("RestoreTask DownloadOneFile. OpenFile-Error=%v", err)
 		return
 	}
+	defer target.Close()
 
-	if _, err = io.Copy(local, r_.Body); err != nil {
+	var form http.Request
+	if err = form.ParseForm(); err != nil {
+		return
+	}
+	form.Form.Add("file", ffm.Storage)
+	// TODO 后续添加“卷”的支持
+	reqBody := strings.TrimSpace(form.Form.Encode())
+
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(reqBody))
+	if err != nil {
+		logger.Fmt.Warnf("%v NewRequest err=%v", r.Str(), err)
 		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Connection", "Keep-Alive")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		logger.Fmt.Warnf("%v Do err=%v", r.Str(), err)
+		return err
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(target, resp.Body)
+	if err != nil {
+		logger.Fmt.Warnf("%v io.Copy err=%v", r.Str(), err)
+		return
 	}
 	return nil
 }
@@ -392,7 +416,7 @@ func (r *RestoreTask) exitWhenErr(code ErrorCode, err error) {
 	}
 
 	r.exitNotifyOnce.Do(func() {
-		logger.Fmt.Errorf("%v.exitWhenErr 捕捉到%v, 恢复任务等待退出...", r.Str())
+		logger.Fmt.Errorf("%v.exitWhenErr 捕捉到%v, 恢复任务等待退出...", r.Str(), err)
 		for {
 			if err = models.UpdateRestoreTask(r.DBDriver.DB, r.taskObj.ID, meta.RESTORESERROR); err != nil {
 				logger.Fmt.Warnf("%v.UpdateRestoreTask Err=%v, wait 10s...", r.Str(), err)

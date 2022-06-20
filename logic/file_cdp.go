@@ -101,6 +101,7 @@ type storage struct {
 // CDPExecutor 文件级CDP实现
 type CDPExecutor struct {
 	isReload      bool                    // 当服务重启时，此属性为True
+	isRetry       bool                    // 当任务重试时，此属性为True
 	startTs       int64                   // 本次备份的开始时间
 	handle        string                  // 任务句柄
 	taskLocker    *flock.Flock            // 任务句柄锁(文件锁)
@@ -164,7 +165,6 @@ func NewCDPExecutorWhenReload(config *models.ConfigModel, dp *models.DBProxy) (c
 
 	ce.taskObj = &task
 	ce.isReload = true
-
 	return
 }
 
@@ -222,7 +222,8 @@ func LoadCDP(ip string, conf int64, reload bool) (err error) {
 }
 
 func (c *CDPExecutor) Str() string {
-	return fmt.Sprintf("<CDP(conf=%v, task=%v, reload=%v)>", c.confObj.ID, c.taskObj.ID, c.isReload)
+	return fmt.Sprintf("<CDP(conf=%v, task=%v, reload=%v, retry=%v)>",
+		c.confObj.ID, c.taskObj.ID, c.isReload, c.isRetry)
 }
 
 func (c *CDPExecutor) registerShardingModel() (err error) {
@@ -252,7 +253,6 @@ func (c *CDPExecutor) StartWithRetry() (err error) {
 	_ = c.reporter.ReportInfo(StepInitArgs)
 
 	// 无限重试策略
-	retry := false
 	go func() {
 		for {
 			if c.confObj.ExtInfoJson.ServerAddress == meta.UnsetStr {
@@ -263,7 +263,7 @@ func (c *CDPExecutor) StartWithRetry() (err error) {
 				logger.Fmt.Infof("%v.StartWithRetry. will sleep 5s...", c.Str())
 			} else {
 				_ = c.reporter.ReportInfo(StepConnDB)
-				if retry == true {
+				if c.isRetry == true {
 					_ = c.reporter.ReportInfo(StepRetryCDPFinish)
 				}
 				if c.inRetryErr(c.Start()) {
@@ -271,7 +271,7 @@ func (c *CDPExecutor) StartWithRetry() (err error) {
 					break
 				}
 			}
-			retry = true
+			c.isRetry = true
 			time.Sleep(meta.DefaultRetryTimeInterval)
 		}
 	}()
@@ -436,7 +436,7 @@ func (c *CDPExecutor) convertCDPing2Copying() (err error) {
 
 func (c *CDPExecutor) convertUnStart2Copying() (err error) {
 	if c.taskObj.Status != meta.CDPUNSTART {
-		return errors.New("invalid task status, not equals to `COPYING`")
+		return errors.New("invalid task status, not equals to `CDPUNSTART`")
 	}
 	if err = models.UpdateBackupTaskStatusByConfID(c.DBDriver.DB, c.confObj.ID, meta.CDPCOPYING); err != nil {
 		return
@@ -641,7 +641,13 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 	} else {
 		//c.fullWG.Wait()
 	}
-	err = c.convertCopying2CDPing()
+	if c.taskObj.Status == meta.CDPCOPYING {
+		err = c.convertCopying2CDPing()
+	} else if c.taskObj.Status == meta.CDPCDPING {
+		_ = c.reporter.ReportInfo(StepCopying2CDPing)
+	} else {
+		err = errors.New("can't go from state `CDPUNSTART` to state `CDPCDPING`")
+	}
 	return
 }
 
@@ -770,7 +776,7 @@ func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err er
 		},
 	)
 
-	_, bucket, _, err := c.confObj.SpecifyTargetWhenS3(ffm.Path)
+	_, bucket, _, _, err := c.confObj.SpecifyTarget(ffm.Path)
 	if err != nil {
 		return err
 	}
@@ -1229,7 +1235,7 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 		}
 		ff.Storage = tools.GenerateRemoteHostKey(origin, ff.Path, remote, tools.IsWin(c.confObj.TargetHostJson.Type))
 	} else if c.is2s3() {
-		origin, _, prefix, err := c.confObj.SpecifyTargetWhenS3(ff.Path)
+		origin, _, _, prefix, err := c.confObj.SpecifyTarget(ff.Path)
 		if err != nil {
 			return fm, err
 		}
