@@ -267,7 +267,7 @@ func (r *RestoreTask) download() {
 			r.confObj.S3ConfJson.SSL,
 			r.confObj.S3ConfJson.Style == "path")
 	} else {
-		url = fmt.Sprintf("http://%v:%v/api/v1/download", r.confObj.TargetHostJson.Address, meta.DefaultAppPort)
+		url = fmt.Sprintf("http://%v:%v/api/v1/download", r.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
 	}
 
 	_ = r.reporter.ReportInfo(StepStartTransfer)

@@ -1,0 +1,9 @@
+{
+  "Name": "rongan-fsnotify",
+  "DisplayName": "Rongan Fsnotify Service",
+  "Description": "文件级实时同步组件",
+  "Port": 5111,
+  "Mode": "release",
+  "WorkDir": "C:\\rongan\\fsnotify",
+  "Log": "C:\\rongan\\log\\fsnotify.log"
+}

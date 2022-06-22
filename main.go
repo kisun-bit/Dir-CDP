@@ -1,62 +1,112 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/kardianos/service"
 	"jingrongshuan/rongan-fnotify/logging"
 	"jingrongshuan/rongan-fnotify/logic"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/router"
+	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
-func StartHTTPService() (err error) {
-	gin.SetMode(meta.DefaultAppMode)
-	routersInit := router.InitRouter()
-	endpoint := fmt.Sprintf(":%d", meta.DefaultAppPort)
+type program struct {
+	Log service.Logger
+	Srv *http.Server
+	Cfg *service.Config
+}
 
-	server := http.Server{
+func (p *program) Start(s service.Service) error {
+	defer func() {
+		go p.run()
+	}()
+	return nil
+}
+
+func (p *program) run() {
+	var err error
+
+	go func() {
+		time.Sleep(meta.DefaultReloadStartDuration)
+		logic.ReloadCDPTask()
+	}()
+
+	gin.DisableConsoleColor()
+	gin.SetMode(meta.ConfigSettings.Mode)
+	routersInit := router.InitRouter()
+	endpoint := fmt.Sprintf(":%d", meta.ConfigSettings.ServicePort)
+	p.Srv = &http.Server{
 		Addr:           endpoint,
 		Handler:        routersInit,
 		ReadTimeout:    meta.DefaultAppReadTimeout,
 		WriteTimeout:   meta.DefaultAppWriteTimeout,
 		MaxHeaderBytes: 1 << 20,
 	}
-	logging.Logger.Fmt.Infof("start rongan-fnotify service listening %s", endpoint)
-	if err = server.ListenAndServe(); err != nil {
-		logging.Logger.Fmt.Error("failed to start rongan-fnotify service err: ", err)
+	if err = p.Srv.ListenAndServe(); err != nil {
+		log.Fatalf("fsnotify service serve ERR=%v", err)
 	}
 	return
 }
 
-func StartReloadTask() {
-	go func() {
-		time.Sleep(meta.DefaultReloadStartDuration)
-		logic.ReloadCDPTask()
-	}()
+func (p *program) Stop(s service.Service) error {
+	var err error
+	logging.Logger.Fmt.Infof("关闭服务")
+	err = p.Srv.Shutdown(context.Background())
+	if err != nil {
+		os.Exit(1)
+	}
+	return err
 }
 
-// @title rongan-fnotify
-// @version 1.0
-// @description 文件级CDP、实时归档
-// @termsOfService http://TODO
-
-// @contact.name kisun-bit
-// @contact.url https://github.com/kisun-bit
-// @contact.email kisun168@aliyun.com
-
-// @license.name Apache 2.0
-// @license.url http://www.apache.org/licenses/LICENSE-2.0.html
-
-// @host 0.0.0.0
-// @BasePath C:\rongan\fsnotify
 func main() {
-	var err error
+	svcConfig := &service.Config{
+		Name:        meta.ConfigSettings.Name,
+		DisplayName: meta.ConfigSettings.DisplayName,
+		Description: meta.ConfigSettings.Description,
+	}
 
-	StartReloadTask()
+	prg := &program{}
+	s, err := service.New(prg, svcConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	if err = StartHTTPService(); err != nil {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			err := s.Install()
+			if err != nil {
+				log.Fatalf("Install service error:%s\n", err.Error())
+			}
+			fmt.Printf("服务已安装")
+		case "uninstall":
+			err := s.Uninstall()
+			if err != nil {
+				log.Fatalf("Uninstall service error:%s\n", err.Error())
+			}
+			fmt.Printf("服务已卸载")
+		case "start":
+			err := s.Start()
+			if err != nil {
+				log.Fatalf("Start service error:%s\n", err.Error())
+			}
+			fmt.Printf("服务已启动")
+		case "stop":
+			err := s.Stop()
+			if err != nil {
+				log.Fatalf("top service error:%s\n", err.Error())
+			}
+			fmt.Printf("服务已关闭")
+		}
 		return
+	}
+
+	if err = s.Run(); err != nil {
+		log.Fatal(err)
 	}
 }

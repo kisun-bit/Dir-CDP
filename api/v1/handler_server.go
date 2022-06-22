@@ -31,13 +31,13 @@ func ModifyServerIP(c *gin.Context) {
 	old := com.StrTo(c.Param("old")).String()
 	now := com.StrTo(c.Param("new")).String()
 
-	input, err := ioutil.ReadFile(meta.ServerIPsWin)
+	input, err := ioutil.ReadFile(meta.ServerIPs)
 	if err != nil {
 		app.Resp(c, http.StatusOK, statuscode.READIPSCONFERROR, nil)
 		return
 	}
 	ips := strings.ReplaceAll(string(input), old, now)
-	err = ioutil.WriteFile(meta.ServerIPsWin, []byte(ips), 0644)
+	err = ioutil.WriteFile(meta.ServerIPs, []byte(ips), 0644)
 	if err != nil {
 		app.Resp(c, http.StatusOK, statuscode.ModifyIPSCONFERROR, nil)
 		return

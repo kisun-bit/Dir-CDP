@@ -524,11 +524,11 @@ func (c *CDPExecutor) moreInit() (err error) {
 
 	if c.is2host() {
 		c.storage.uploadSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.Address, meta.DefaultAppPort)
+			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
 		c.storage.deleteSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.Address, meta.DefaultAppPort)
+			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
 		c.storage.renameSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.Address, meta.DefaultAppPort)
+			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
 		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.uploadSession)
 
 	} else if c.is2s3() {
@@ -1169,7 +1169,7 @@ func (c *CDPExecutor) isValidPath(path string, mtime int64) bool {
 func (c *CDPExecutor) initTaskOnce() (err error) {
 	var hb uuid.UUID
 	defer func() {
-		if err == nil && hb.String() != "" {
+		if err == nil && hb.String() != "00000000-0000-0000-0000-000000000000" {
 			_, err = os.Create(filepath.Join(meta.HandlerBaseDir, hb.String()))
 		}
 	}()

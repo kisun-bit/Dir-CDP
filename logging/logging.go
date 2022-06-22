@@ -7,16 +7,12 @@ import (
 
 var (
 	LogDefaultName           = ""
-	LogDefaultPath           = "C:\\rongan\\log\\fnotify.log"
+	LogDefaultPath           = meta.ConfigSettings.Log
 	LogDefaultRotateHours    = 24 * 30
 	LogDefaultRetentionHours = 24 * 30 * 4
 )
 
 func GetDefaultLogger() *log.Logger {
-	if !meta.IsWin {
-		LogDefaultPath = "/opt/rongan/log/fnotify.log"
-	}
-
 	l, _ := log.NewRateFileLimitAgeSugaredLogger(
 		LogDefaultName,
 		LogDefaultPath,

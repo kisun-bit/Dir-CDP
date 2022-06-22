@@ -16,7 +16,7 @@ func RegisterServerInfo(ip string) (err error) {
 		rs  string
 		end int64
 	)
-	fp, err = os.OpenFile(meta.ServerIPsWin, os.O_RDWR|os.O_CREATE, meta.DefaultFileMode)
+	fp, err = os.OpenFile(meta.ServerIPs, os.O_RDWR|os.O_CREATE, meta.DefaultFileMode)
 	if err != nil {
 		logger.Fmt.Errorf("RegisterServerInfo IP(%s) Err=%v", ip, err)
 		return
@@ -55,12 +55,12 @@ func ReloadCDPTask() {
 		rs  string
 	)
 
-	if _, err = os.Stat(meta.ServerIPsWin); err != nil {
-		logger.Fmt.Infof("ReloadCDPTask not existed `%s`", meta.ServerIPsWin)
+	if _, err = os.Stat(meta.ServerIPs); err != nil {
+		logger.Fmt.Infof("ReloadCDPTask not existed `%s`", meta.ServerIPs)
 		return
 	}
 
-	fp, err = os.Open(meta.ServerIPsWin)
+	fp, err = os.Open(meta.ServerIPs)
 	if err != nil {
 		logger.Fmt.Errorf("ReloadCDPTask Open Err=%v", err)
 		return
