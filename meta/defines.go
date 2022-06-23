@@ -48,6 +48,15 @@ var EventCode = map[Event]string{
 	Win32EventFullScan:   "NT_SCANNING",
 }
 
+var EventDesc = map[string]string{
+	"NT_CREATE":   "创建",
+	"NT_DELETE":   "删除",
+	"NT_UPDATE":   "更新",
+	"NT_RF":       "重命名",
+	"NT_RT":       "重命名",
+	"NT_SCANNING": "扫描",
+}
+
 // 监控同步配置的目标类型
 const (
 	WatchingConfTargetS3   = "S3"

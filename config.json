@@ -1,9 +1,9 @@
 {
-  "Name": "rongan-fsnotify",
-  "DisplayName": "Rongan Fsnotify Service",
-  "Description": "文件级实时同步组件",
+  "Name": "rongan-cdp",
+  "DisplayName": "Rongan CDP Service",
+  "Description": "实时数据同步服务",
   "Port": 5111,
   "Mode": "release",
-  "WorkDir": "C:\\rongan\\fsnotify",
-  "Log": "C:\\rongan\\log\\fsnotify.log"
+  "WorkDir": "C:\\rongan\\cdp",
+  "Log": "C:\\rongan\\log\\rongan-cdp.log"
 }

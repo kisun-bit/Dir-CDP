@@ -197,6 +197,12 @@ func QueryFileIteratorByTime(db *gorm.DB, conf int64, start, end *time.Time) (ro
 	return db.Raw(sql_).Rows()
 }
 
+func QueryFileIteratorByConfig(db *gorm.DB, conf int64) (rows *sql.Rows, err error) {
+	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE conf_id = %v`,
+		_eventFileTable(conf), conf)
+	return db.Raw(sql_).Rows()
+}
+
 func QueryNoVersionFilesByPath(db *gorm.DB, conf int64, path string) (fs []EventFileModel, err error) {
 	sql_ := fmt.Sprintf(`SELECT * FROM %v where path = '%v'`, _eventFileTable(conf), path)
 	err = db.Raw(sql_).Scan(&fs).Error

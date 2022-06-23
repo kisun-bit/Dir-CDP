@@ -7,11 +7,18 @@ import (
 	"github.com/thoas/go-funk"
 	"gorm.io/gorm"
 	"jingrongshuan/rongan-fnotify/meta"
+	"jingrongshuan/rongan-fnotify/tools"
 	"strings"
 )
 
 type ConfigModelExtInfo struct {
-	ServerAddress string `json:"server_address"`
+	ServerAddress string        `json:"server_address"`
+	LogKeepPolicy LogKeepPolicy `json:"log_keep_policy"`
+}
+
+type LogKeepPolicy struct {
+	Days  int `json:"days"`
+	Level int `json:"level"` // 1-debug, 2-info, 3-warn, 4-error
 }
 
 type ConfigModelTimeStrategy struct {
@@ -151,7 +158,24 @@ func (c *ConfigModel) LoadsJsonFields(db *gorm.DB) (err error) {
 		logger.Fmt.Errorf("loadS3ConfJson ERR=%v", err)
 		return
 	}
+	c.fixPath()
 	return
+}
+
+func (c *ConfigModel) fixPath() {
+	var targetIsWin bool
+	var originIsWin bool
+	if c.TargetJson.TargetType == meta.WatchingConfTargetHost {
+		targetIsWin = tools.IsWin(c.TargetHostJson.Type)
+	}
+	originIsWin = meta.IsWin
+
+	for i := 0; i < len(c.DirsMappingJson); i++ {
+		c.DirsMappingJson[i].LocalOrigin = tools.CorrectPathWithPlatform(
+			c.DirsMappingJson[i].LocalOrigin, originIsWin)
+		c.DirsMappingJson[i].StoragePrefixForBucketOrRemote = tools.CorrectPathWithPlatform(
+			c.DirsMappingJson[i].StoragePrefixForBucketOrRemote, targetIsWin)
+	}
 }
 
 func (c *ConfigModel) loadOriginHostJson(db *gorm.DB) (err error) {

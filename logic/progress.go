@@ -21,7 +21,6 @@ type Progress struct {
 }
 
 func NewProgress(interval time.Duration, task int64, db *gorm.DB, server string, type_ meta.TaskType) *Progress {
-
 	p := &Progress{
 		ProcessedSize:   0,
 		ProcessedNumber: 0,
@@ -29,6 +28,7 @@ func NewProgress(interval time.Duration, task int64, db *gorm.DB, server string,
 		TaskID:          task,
 		DB:              db,
 		Server:          server,
+		Type:            type_,
 	}
 	p.setStart()
 	return p

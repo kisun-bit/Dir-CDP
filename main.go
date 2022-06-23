@@ -83,25 +83,25 @@ func main() {
 			if err != nil {
 				log.Fatalf("Install service error:%s\n", err.Error())
 			}
-			fmt.Printf("服务已安装")
+			fmt.Printf("CDP服务已安装")
 		case "uninstall":
 			err := s.Uninstall()
 			if err != nil {
 				log.Fatalf("Uninstall service error:%s\n", err.Error())
 			}
-			fmt.Printf("服务已卸载")
+			fmt.Printf("CDP服务已卸载")
 		case "start":
 			err := s.Start()
 			if err != nil {
 				log.Fatalf("Start service error:%s\n", err.Error())
 			}
-			fmt.Printf("服务已启动")
+			fmt.Printf("CDP服务已启动")
 		case "stop":
 			err := s.Stop()
 			if err != nil {
 				log.Fatalf("top service error:%s\n", err.Error())
 			}
-			fmt.Printf("服务已关闭")
+			fmt.Printf("CDP服务已关闭")
 		}
 		return
 	}

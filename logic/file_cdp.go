@@ -6,6 +6,7 @@ package logic
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,6 +110,7 @@ type CDPExecutor struct {
 	confObj       *models.ConfigModel     // 配置对象
 	taskObj       *models.BackupTaskModel // 任务对象
 	reporter      *Reporter               // 日志上报器
+	logRecycle    *LogRecycle             // 日志清理
 	progress      *Progress               // 数据量、文件数完成进度上报器
 	listFilter    *Grep                   // 黑白名单过滤器
 	fbp           *fullBackupProxy        // 全备代理
@@ -308,8 +310,11 @@ func (c *CDPExecutor) Start() (ec ErrorCode) {
 	}()
 	c.progress = NewProgress(meta.DefaultReportProcessSecs,
 		c.taskObj.ID, c.DBDriver.DB, c.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeBackup)
+	c.logRecycle = NewLogRecycle(c.confObj.ID, c.taskObj.ID,
+		c.confObj.ExtInfoJson.LogKeepPolicy.Days, c.confObj.ExtInfoJson.LogKeepPolicy.Level, c.DBDriver.DB)
 
 	go c.monitorStopNotify()
+	go c.logRecycle.Start()
 	go c.progress.Gather()
 	go c.logic()
 
@@ -386,7 +391,7 @@ func (c *CDPExecutor) logic() {
 	if err = models.DeleteNotUploadFileFlows(c.DBDriver.DB, c.confObj.ID); err != nil {
 		return
 	}
-	if err = models.DeleteLogsByTime(c.DBDriver.DB, c.confObj.ID, c.startTs); err != nil {
+	if err = models.DeleteCDPStartLogsByTime(c.DBDriver.DB, c.confObj.ID, c.startTs); err != nil {
 		return
 	}
 	_ = c.reporter.ReportInfo(StepClearFailedHistory)
@@ -460,6 +465,7 @@ func (c *CDPExecutor) convertCopying2CDPing() (err error) {
 }
 
 func (c *CDPExecutor) logicWhenReload() (err error) {
+	_ = c.deleteRemoteWhenReload()
 	_ = c.reporter.ReportInfo(StepStartFullAndIncrWhenReload)
 	if c.taskObj.Status == meta.CDPUNSTART {
 		if err = c.convertUnStart2Copying(); err != nil {
@@ -656,13 +662,17 @@ func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, 
 		var err error
 		defer func() {
 			if err == nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileScanUpS, fwo.Path)
+				_ = c.reporter.ReportDebugWithoutLogWithKey(
+					meta.RuntimeIOBackup, StepFileScanUpS, meta.EventDesc[fwo.Event], fwo.Path)
 			} else if err == nil && fwo.Event != meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventUpS, fwo.Path)
+				_ = c.reporter.ReportDebugWithoutLogWithKey(
+					meta.RuntimeIOBackup, StepFileEventUpS, meta.EventDesc[fwo.Event], fwo.Path)
 			} else if err != nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileScanUpF, fwo.Path, err)
+				_ = c.reporter.ReportWarnWithoutLogWithKey(
+					meta.RuntimeIOBackup, StepFileScanUpF, meta.EventDesc[fwo.Event], fwo.Path, err)
 			} else {
-				_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventUpF, fwo.Path, err)
+				_ = c.reporter.ReportWarnWithoutLogWithKey(
+					meta.RuntimeIOBackup, StepFileEventUpF, meta.EventDesc[fwo.Event], fwo.Path, err)
 			}
 		}()
 
@@ -741,7 +751,7 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 
 	part, _ := writer.CreateFormFile("filename", ffm.Storage)
 	if _, err = io.Copy(part, fp); err != nil {
-		logger.Fmt.Errorf("%v.upload2host io.Copy ERR=%v", c.Str(), err)
+		logger.Fmt.Warnf("%v.upload2host io.Copy ERR=%v", c.Str(), err)
 		return
 	}
 	if err = writer.Close(); err != nil {
@@ -804,6 +814,46 @@ func (c *CDPExecutor) incr() {
 	go func() {
 		c.fsNotify()
 	}()
+}
+
+func (c *CDPExecutor) deleteRemoteWhenReload() (err error) {
+	if !c.confObj.EnableVersion || !c.isReload {
+		logger.Fmt.Infof("%v.deleteRemoteWhenReload skip...")
+		return nil
+	}
+
+	var (
+		row *sql.Rows
+		ffm models.EventFileModel
+	)
+
+	if row, err = models.QueryFileIteratorByConfig(
+		c.DBDriver.DB, c.taskObj.ConfID); err != nil {
+		logger.Fmt.Errorf("%v.deleteRemoteWhenReload Error=%v", c.Str(), err)
+		return err
+	}
+	defer row.Close()
+
+	for row.Next() {
+		if c.isStopped() {
+			return nil
+		}
+		if err = c.DBDriver.DB.ScanRows(row, &ffm); err != nil {
+			logger.Fmt.Errorf("%v.deleteRemoteWhenReload. ScanRows-Err=%v", c.Str(), err)
+			return err
+		}
+		if _, e := os.Stat(ffm.Path); e != nil {
+			// 如果源机不存在则删除备机处的同名文件
+			if e := c.deleteFilesInRemote(ffm.Path); e == nil {
+				_ = c.reporter.ReportDebugWithoutLogWithKey(
+					meta.RuntimeIOBackup, StepFileEventDel, "扫描", ffm.Path)
+			} else {
+				_ = c.reporter.ReportErrorWithoutLogWithKey(
+					meta.RuntimeIOBackup, StepFileEventDelF, "扫描", ffm.Path, e)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *CDPExecutor) scanNotify() {
@@ -905,13 +955,16 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 		case meta.Win32EventRenameFrom:
 			if !c.confObj.EnableVersion && c.is2host() {
 				// 如果备机存在则删除
-				if e := c.deleteFilesInRemote(fwo); e == nil {
-					_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventDel, fwo.Path)
+				if e := c.deleteFilesInRemote(fwo.Path); e == nil {
+					_ = c.reporter.ReportDebugWithoutLogWithKey(
+						meta.RuntimeIOBackup, StepFileEventDel, meta.EventDesc[fwo.Event.Str()], fwo.Path)
 				} else {
-					_ = c.reporter.ReportErrWithoutLogWithKey(meta.RuntimeIOBackup, StepFileEventDelF, fwo.Path, e)
-					// TODO 记录真正的文件数
+					_ = c.reporter.ReportWarnWithoutLogWithKey(
+						meta.RuntimeIOBackup, StepFileEventDelF, meta.EventDesc[fwo.Event.Str()], fwo.Path, e)
 				}
+				break
 			}
+			fallthrough
 		case meta.Win32EventCreate:
 			fallthrough
 		case meta.Win32EventRenameTo:
@@ -1004,12 +1057,12 @@ func (c *CDPExecutor) startWatchers() (err error) {
 	return
 }
 
-func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err error) {
+func (c *CDPExecutor) deleteFilesInRemote(path string) (err error) {
 	if c.storage.deleteSession == meta.UnsetStr {
 		return errors.New("lack address of delete session")
 	}
 
-	fs, e := models.QueryNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
+	fs, e := models.QueryNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path)
 	if e != nil {
 		logger.Fmt.Errorf("%v.QueryNoVersionFilesByPath ERR=%v", c.Str(), e)
 	}
@@ -1020,7 +1073,7 @@ func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err er
 	}
 
 	for _, file := range funk.UniqString(keys) {
-		logger.Fmt.Infof("%v.deleteFilesInRemote delete %v related %v", c.Str(), file, fwo.Path)
+		logger.Fmt.Infof("%v.deleteFilesInRemote delete %v related %v", c.Str(), file, path)
 		data := requests.Datas{"b64": file}
 		resp, e := requests.Post(c.storage.deleteSession, data)
 		if e != nil {
@@ -1034,7 +1087,7 @@ func (c *CDPExecutor) deleteFilesInRemote(fwo nt_notify.FileWatchingObj) (err er
 		}
 	}
 
-	return models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, fwo.Path)
+	return models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path)
 }
 
 func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.FileWatchingObj, full bool) (err error) {

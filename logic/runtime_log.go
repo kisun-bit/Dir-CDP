@@ -17,14 +17,34 @@ const (
 	LogLevelFatal
 )
 
+func DescribeLogLevel(level int) string {
+	switch level {
+	case LogLevelTrace:
+		return "trace"
+	case LogLevelDebug:
+		return "debug"
+	case LogLevelInfo:
+		return "info"
+	case LogLevelWarn:
+		return "warn"
+	case LogLevelError:
+		return "error"
+	case LogLevelFatal:
+		return "fatal"
+	default:
+		return "unknown"
+	}
+}
+
 // 日志任务状态
 const (
-	LogStatusRun     string = "R"
-	LogStatusSuccess string = "S"
-	LogStatusFailed  string = "F"
-	LogStatusWarn    string = "W"
-	LogStatusCancel  string = "C"
-	LogStatusUnknown string = "O"
+	LogStatusRun string = "R"
+	// TODO 后续支持日志中提现任务的执行状态
+	//LogStatusSuccess string = "S"
+	//LogStatusFailed  string = "F"
+	//LogStatusWarn    string = "W"
+	//LogStatusCancel  string = "C"
+	//LogStatusUnknown string = "O"
 )
 
 // CDP备份期间、恢复期间的状态集
@@ -68,12 +88,12 @@ const (
 	StepRetryCDPFinish             = "重试完成，开始执行任务"
 	StepRetryCDPMatchSer           = "重试失败，组件运行时未记录备份服务器IP，导致重连数据库异常"
 	StepServerConnErr              = "备份服务器与客户端之间网络连接异常，正在重试...，请稍后"
-	StepFileScanUpS                = "基于扫描，文件%s完成同步"
-	StepFileEventUpS               = "基于事件，文件%s完成同步"
-	StepFileScanUpF                = "基于扫描，文件%s同步失败，原因：%v"
-	StepFileEventUpF               = "基于事件，文件%s同步失败，原因：%v"
-	StepFileEventDel               = "基于事件，远程文件%s完成删除"
-	StepFileEventDelF              = "基于事件，源文件%v的远程文件删除失败，原因：%v"
+	StepFileScanUpS                = "基于%v事件，文件%s完成同步"
+	StepFileEventUpS               = "基于%v事件，文件%s完成同步"
+	StepFileScanUpF                = "基于%v事件，文件%s同步失败，原因：%v"
+	StepFileEventUpF               = "基于%v事件，文件%s同步失败，原因：%v"
+	StepFileEventDel               = "基于%v事件，远程文件%s完成删除"
+	StepFileEventDelF              = "基于%v事件，源文件%v的远程文件删除失败，原因：%v"
 	StepInitRestoreTask            = "初始化恢复任务"
 	StepLoadArgs                   = "加载备份参数"
 	StepLoadArgsF                  = "加载备份参数失败，原因：%v"
@@ -106,38 +126,80 @@ func (re *Reporter) Str() string {
 	return fmt.Sprintf("<Reporter(Conf=%v, Task=%v, Type=%v)>", re.Conf, re.Task, re.Type)
 }
 
+func (re *Reporter) ReportTrace(format string, a ...interface{}) (err error) {
+	return re.trace("", format, true, a...)
+}
+
 func (re *Reporter) ReportInfo(format string, a ...interface{}) (err error) {
 	return re.info("", format, true, a...)
+}
+
+func (re *Reporter) ReportWarn(format string, a ...interface{}) (err error) {
+	return re.warn("", format, true, a...)
 }
 
 func (re *Reporter) ReportError(format string, a ...interface{}) (err error) {
 	return re.error("", format, true, a...)
 }
 
+func (re *Reporter) ReportFatal(format string, a ...interface{}) (err error) {
+	return re.fatal("", format, true, a...)
+}
+
+func (re *Reporter) ReportTraceWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+	return re.trace(key, format, false, a...)
+}
+
+func (re *Reporter) ReportDebugWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+	return re.debug(key, format, false, a...)
+}
+
 func (re *Reporter) ReportInfoWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
 	return re.info(key, format, false, a...)
 }
 
-func (re *Reporter) ReportErrWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+func (re *Reporter) ReportWarnWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+	return re.warn(key, format, false, a...)
+}
+
+func (re *Reporter) ReportErrorWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
 	return re.error(key, format, false, a...)
 }
 
+func (re *Reporter) ReportFatalWithoutLogWithKey(key, format string, a ...interface{}) (err error) {
+	return re.fatal(key, format, false, a...)
+}
+
+func (re *Reporter) trace(key, format string, log bool, a ...interface{}) (err error) {
+	return re._log(LogLevelTrace, key, format, log, a...)
+}
+
+func (re *Reporter) debug(key, format string, log bool, a ...interface{}) (err error) {
+	return re._log(LogLevelDebug, key, format, log, a...)
+}
+
 func (re *Reporter) info(key, format string, log bool, a ...interface{}) (err error) {
-	message := fmt.Sprintf(format, a...)
-	if log {
-		logger.Fmt.Infof("%s.info >>>>>> %s", re.Str(), message)
-	}
-	return models.NewLog(
-		re.DB, re.Conf, re.Task,
-		string(re.Type), key, LogStatusRun, message, "{}", LogLevelInfo)
+	return re._log(LogLevelInfo, key, format, log, a...)
+}
+
+func (re *Reporter) warn(key, format string, log bool, a ...interface{}) (err error) {
+	return re._log(LogLevelWarn, key, format, log, a...)
 }
 
 func (re *Reporter) error(key, format string, log bool, a ...interface{}) (err error) {
+	return re._log(LogLevelError, key, format, log, a...)
+}
+
+func (re *Reporter) fatal(key, format string, log bool, a ...interface{}) (err error) {
+	return re._log(LogLevelFatal, key, format, log, a...)
+}
+
+func (re *Reporter) _log(level int, key, format string, log bool, a ...interface{}) (err error) {
 	message := fmt.Sprintf(format, a...)
 	if log {
-		logger.Fmt.Infof("%s.error >>>>>> %s", re.Str(), message)
+		logger.Fmt.Infof("%s.%s >>>>>> %s", re.Str(), DescribeLogLevel(level), message)
 	}
 	return models.NewLog(
 		re.DB, re.Conf, re.Task,
-		string(re.Type), key, LogStatusRun, message, "{}", LogLevelInfo)
+		string(re.Type), key, LogStatusRun, message, "{}", level)
 }
