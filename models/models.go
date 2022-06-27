@@ -62,6 +62,9 @@ func (fvb *DBProxy) migrate() (err error) {
 	if err = fvb.DB.AutoMigrate(&Logging{}); err != nil {
 		return
 	}
+	if err = fvb.DB.AutoMigrate(&ClientNode{}); err != nil {
+		return
+	}
 	return
 }
 

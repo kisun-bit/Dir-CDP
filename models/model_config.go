@@ -47,7 +47,7 @@ type ConfigModel struct {
 	Name   string `gorm:"column:name;type:text"`
 	Desc   string `gorm:"column:desc;type:text"`
 	Origin int64  `gorm:"column:origin"` // 同步源机ID
-	Server int64  `gorm:"column:server"` // 备份服务器ID
+	Server string `gorm:"column:server"` // 备份服务器ID
 	/*XXX DirsMapping 源目录与目标目录的映射关系
 
 	支持多个目录，其结构如下
@@ -112,8 +112,8 @@ type ConfigModel struct {
 	*/
 	ExtInfo string `gorm:"column:ext_info;type:text"` // 扩展参数，JSON格式
 
-	OriginHostJson   Client                  `gorm:"-"`
-	TargetHostJson   Client                  `gorm:"-"`
+	OriginHostJson   ClientNode              `gorm:"-"`
+	TargetHostJson   ClientNode              `gorm:"-"`
 	S3ConfJson       S3Conf                  `gorm:"-"`
 	ExtInfoJson      ConfigModelExtInfo      `gorm:"-"`
 	TimeStrategyJson ConfigModelTimeStrategy `gorm:"-"`
@@ -166,7 +166,7 @@ func (c *ConfigModel) fixPath() {
 	var targetIsWin bool
 	var originIsWin bool
 	if c.TargetJson.TargetType == meta.WatchingConfTargetHost {
-		targetIsWin = tools.IsWin(c.TargetHostJson.Type)
+		targetIsWin = tools.IsWin(c.TargetHostJson.OS)
 	}
 	originIsWin = meta.IsWin
 
@@ -179,7 +179,7 @@ func (c *ConfigModel) fixPath() {
 }
 
 func (c *ConfigModel) loadOriginHostJson(db *gorm.DB) (err error) {
-	c.OriginHostJson, err = QueryClientInfoByID(db, c.Origin)
+	c.OriginHostJson, err = QueryClientNodeByID(db, c.Origin)
 	return
 }
 
@@ -187,7 +187,7 @@ func (c *ConfigModel) loadTargetHostJson(db *gorm.DB) (err error) {
 	if c.TargetJson.TargetType != meta.WatchingConfTargetHost {
 		return nil
 	}
-	c.TargetHostJson, err = QueryClientInfoByID(db, c.TargetJson.TargetID)
+	c.TargetHostJson, err = QueryClientNodeByID(db, c.TargetJson.TargetID)
 	return
 }
 

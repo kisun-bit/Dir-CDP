@@ -5,7 +5,6 @@
 package logic
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -530,11 +529,11 @@ func (c *CDPExecutor) moreInit() (err error) {
 
 	if c.is2host() {
 		c.storage.uploadSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
+			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		c.storage.deleteSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
+			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		c.storage.renameSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.Address, meta.ConfigSettings.ServicePort)
+			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.uploadSession)
 
 	} else if c.is2s3() {
@@ -545,7 +544,6 @@ func (c *CDPExecutor) moreInit() (err error) {
 			c.confObj.S3ConfJson.Region,
 			c.confObj.S3ConfJson.SSL,
 			c.confObj.S3ConfJson.Style == "path")
-
 	} else {
 		return fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
 	}
@@ -746,36 +744,46 @@ func (c *CDPExecutor) uploadWithRetry(ffm models.EventFileModel, retry int) (err
 }
 
 func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err error) {
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	r, w := io.Pipe()
+	writer := multipart.NewWriter(w)
 
-	part, _ := writer.CreateFormFile("filename", ffm.Storage)
-	if _, err = io.Copy(part, fp); err != nil {
-		logger.Fmt.Warnf("%v.upload2host io.Copy ERR=%v", c.Str(), err)
-		return
+	// FIX: 优化大文件传输时内存占用过大的问题
+	go func() {
+		defer w.Close()
+		defer writer.Close()
+
+		var part io.Writer
+		part, err = writer.CreateFormFile("filename", ffm.Storage)
+		if err != nil {
+			logger.Fmt.Warnf("%v.upload2host writer.CreateFormFile ERR=%v", c.Str(), err)
+			return
+		}
+		if _, err = io.Copy(part, fp); err != nil {
+			logger.Fmt.Warnf("%v.upload2host io.Copy ERR=%v", c.Str(), err)
+			return
+		}
+	}()
+
+	req, err := http.NewRequest(http.MethodPost, c.storage.uploadSession, r)
+	if err != nil {
+		logger.Fmt.Warnf("%v.upload2host http.NewRequest ERR=%v", c.Str(), err)
+		return err
 	}
-	if err = writer.Close(); err != nil {
-		return
-	}
+	req.Header.Add("Content-Type", writer.FormDataContentType())
 
-	r, _ := http.NewRequest("POST", c.storage.uploadSession, body)
-	// TODO 在发生中断时，立即终止HTTP连接
-
-	r.Header.Add("Content-Type", writer.FormDataContentType())
 	client := &http.Client{}
-	if resp, err := client.Do(r); err != nil {
+	resp, err := client.Do(req)
+	if err != nil {
 		logger.Fmt.Errorf("%v.upload2host client.Do ERR=%v", c.Str(), err)
 		return err
-	} else {
-		if resp.StatusCode == http.StatusOK {
-			c.progress.AddNum(1)
-			c.progress.AddSize(ffm.Size)
-			return nil
-		}
-		bb, _ := ioutil.ReadAll(resp.Body)
-		logger.Fmt.Errorf("%v.upload2host status-err %v", string(bb))
+	}
+	if resp.StatusCode == http.StatusOK {
+		c.progress.AddNum(1)
+		c.progress.AddSize(ffm.Size)
 		return nil
 	}
+	bb, _ := ioutil.ReadAll(resp.Body)
+	return fmt.Errorf("invalid status(%v) reason(%v)", resp.StatusCode, string(bb))
 }
 
 func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err error) {
@@ -1286,7 +1294,7 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 		if err != nil {
 			return fm, err
 		}
-		ff.Storage = tools.GenerateRemoteHostKey(origin, ff.Path, remote, tools.IsWin(c.confObj.TargetHostJson.Type))
+		ff.Storage = tools.GenerateRemoteHostKey(origin, ff.Path, remote, tools.IsWin(c.confObj.TargetHostJson.OS))
 	} else if c.is2s3() {
 		origin, _, _, prefix, err := c.confObj.SpecifyTarget(ff.Path)
 		if err != nil {

@@ -11,6 +11,7 @@ import (
 	"jingrongshuan/rongan-fnotify/router"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"time"
 )
@@ -64,6 +65,7 @@ func (p *program) Stop(s service.Service) error {
 }
 
 func main() {
+
 	svcConfig := &service.Config{
 		Name:        meta.ConfigSettings.Name,
 		DisplayName: meta.ConfigSettings.DisplayName,

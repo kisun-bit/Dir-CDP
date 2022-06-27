@@ -8,47 +8,21 @@ import (
 	"jingrongshuan/rongan-fnotify/meta"
 	"net/http"
 	"os"
-	"path/filepath"
 )
 
 func Upload(c *gin.Context) {
 	appG := app.Gin{C: c}
 
-	reader, err := c.Request.MultipartReader()
+	file, err := c.FormFile("filename")
 	if err != nil {
-		appG.Response(http.StatusBadRequest, statuscode.SYNCFILEFAILED, nil)
+		appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
 		return
 	}
 
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			appG.Response(http.StatusBadRequest, statuscode.SYNCFILEFAILED, nil)
-			return
-		}
-
-		filename := part.FileName()
-		// 权限
-		if filename == "" {
-			appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
-			return
-		}
-		if _, err_ := os.Stat(filepath.Dir(filename)); err_ != nil {
-			_ = os.MkdirAll(filepath.Dir(filename), 0666)
-		}
-		dst, err := os.Create(filename)
-		if err != nil {
-			appG.Response(http.StatusBadRequest, statuscode.EXISTSSAMENAMEFILE, nil)
-			return
-		}
-		_, err = io.Copy(dst, part)
-		dst.Close()
-		if err != nil {
-			appG.Response(http.StatusBadRequest, statuscode.WRITEIOFAILED, nil)
-			return
-		}
+	err = c.SaveUploadedFile(file, file.Filename)
+	if err != nil {
+		appG.Response(http.StatusBadRequest, statuscode.SYNCFILEFAILED, nil)
+		return
 	}
 
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)

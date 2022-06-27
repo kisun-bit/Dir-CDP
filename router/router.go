@@ -10,6 +10,7 @@ func InitRouter() *gin.Engine {
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
 
+	//pprof.Register(r)
 	apiv1 := r.Group("/api/v1")
 	{
 		// 初始化数据库接口
@@ -30,6 +31,7 @@ func InitRouter() *gin.Engine {
 		apiv1.POST("/server/:old/:new", v1.ModifyServerIP)
 		// NOTE. 更多接口可用studio中的接口来调度
 	}
+	//pprof.RouteRegister(apiv1, "pprof")
 
 	return r
 }
