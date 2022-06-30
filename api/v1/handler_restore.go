@@ -15,7 +15,7 @@ func StartRestore(c *gin.Context) {
 	id := com.StrTo(c.Param("id")).MustInt64()
 	ip := com.StrTo(c.Param("ip")).String()
 
-	dp, err := models.NewDBProxy(ip)
+	dp, err := models.NewDBProxyWithInit(ip)
 	if err != nil {
 		appG.Response(http.StatusBadRequest, statuscode.INITDBPROXYFAILED, nil)
 		return

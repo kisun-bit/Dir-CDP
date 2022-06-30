@@ -23,6 +23,14 @@ const (
 	DELFILEERROR         = 0x10012
 	READIPSCONFERROR     = 0x10013
 	ModifyIPSCONFERROR   = 0x10014
+	LackVolume           = 0x10015
+	SysUnsupportedSnap   = 0x10016
+	CreateVssSnapFailed  = 0x10017
+	DetailVssSnapFailed  = 0x10018
+	RevertVssSnapFailed  = 0x10019
+	DeleteVssSnapFailed  = 0x10020
+	FormatResponseErr    = 0x10021
+	InitDBDriverFailed   = 0x10022
 )
 
 var MSGFlag = map[int]string{
@@ -48,4 +56,12 @@ var MSGFlag = map[int]string{
 	DELFILEERROR:         "删除文件失败",
 	READIPSCONFERROR:     "读取本地备份服务器IP配置失败",
 	ModifyIPSCONFERROR:   "修改本地备份服务器IP配置失败",
+	LackVolume:           "未指定卷",
+	SysUnsupportedSnap:   "系统不支持快照",
+	CreateVssSnapFailed:  "创建VSS快照失败",
+	DetailVssSnapFailed:  "查询VSS快照失败",
+	RevertVssSnapFailed:  "回滚VSS快照失败",
+	DeleteVssSnapFailed:  "删除VSS快照失败",
+	FormatResponseErr:    "格式化响应失败",
+	InitDBDriverFailed:   "初始化数据库驱动失败",
 }

@@ -37,14 +37,14 @@ type RestoreTaskModel struct {
 	"restore_map": "str, 恢复目标路径",结构说明：
 	[
 	    {
-	        "target": "D:\\tmp\\backup_origin\\2",
+	        "Target": "D:\\tmp\\backup_origin\\2",
 	        "bucket": "",
 	        "origin": "D:\\tmp\\backup\\map2",
 	        "recursion": true,
 	        "depth": -1
 	    },
 	    {
-	        "target": "D:\\tmp\\backup_origin\\1",
+	        "Target": "D:\\tmp\\backup_origin\\1",
 	        "bucket": "",
 	        "origin": "D:\\tmp\\backup\\map1",
 	        "recursion": true,
@@ -59,7 +59,7 @@ type RestoreTaskModel struct {
 type RestoreDirMap struct {
 	LocalDir                       string `json:"origin"`    // 本地恢复目录
 	StorageBucket                  string `json:"bucket"`    // 目标桶
-	StoragePrefixForBucketOrRemote string `json:"target"`    // 目标存储的前缀、目录
+	StoragePrefixForBucketOrRemote string `json:"Target"`    // 目标存储的前缀、目录
 	StorageVolume                  string `json:"volume"`    // 目标卷
 	LocalEnableRecursion           bool   `json:"recursion"` // 是否支持递归
 	LocalEnabledDepth              int    `json:"depth"`     // 指定备恢复深度

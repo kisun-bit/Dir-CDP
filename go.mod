@@ -8,8 +8,9 @@ require (
 	github.com/boltdb/bolt v1.3.1
 	github.com/cavaliergopher/grab/v3 v3.0.1 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
-	github.com/gin-contrib/pprof v1.3.0
+	github.com/gin-contrib/pprof v1.3.0 // indirect
 	github.com/gin-gonic/gin v1.7.7
+	github.com/go-cmd/cmd v1.4.1
 	github.com/go-openapi/spec v0.20.6 // indirect
 	github.com/go-openapi/swag v0.21.1 // indirect
 	github.com/go-ping/ping v1.0.0 // indirect
@@ -28,14 +29,17 @@ require (
 	github.com/panjf2000/ants/v2 v2.5.0
 	github.com/pkg/profile v1.6.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0
+	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/swaggo/files v0.0.0-20210815190702-a29dd2bc99b2 // indirect
 	github.com/swaggo/gin-swagger v1.4.3 // indirect
 	github.com/thoas/go-funk v0.9.2
 	github.com/ugorji/go v1.2.7 // indirect
 	github.com/unknwon/com v1.0.1
 	github.com/urfave/cli/v2 v2.6.0 // indirect
+	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	golang.org/x/crypto v0.0.0-20220511200225-c6db032c6c88 // indirect
 	golang.org/x/sys v0.0.0-20220503163025-988cb79eb6c6 // indirect
+	golang.org/x/text v0.3.7
 	golang.org/x/tools v0.1.10 // indirect
 	google.golang.org/protobuf v1.28.0 // indirect
 	gorm.io/driver/postgres v1.3.5

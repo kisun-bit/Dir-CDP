@@ -63,7 +63,7 @@ type EventFileModel struct {
 }
 
 func (flow *EventFileModel) String() string {
-	return fmt.Sprintf("<FileLogging(ID=%v, Path=%v, Event=%v>", flow.ID, flow.Path, flow.Version)
+	return fmt.Sprintf("<FileLogging(ID=%v, Flag=%v, Event=%v>", flow.ID, flow.Path, flow.Version)
 }
 
 func _eventFileTable(conf int64) string {

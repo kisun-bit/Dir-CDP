@@ -102,8 +102,15 @@ const (
 var (
 	OneDay                = 24 * time.Hour
 	RuntimeIOBackup       = "file-io-backup"         // 运行时文件IO标记
+	RuntimeSnapshot       = "snapshot"               // 运行时快照创建
 	TriggerMan      int64 = 1                        // CDP 触发方式， 默认手动
 	TimeFMT               = "2006-01-02 15:04:05"    // 通用的时间格式化串
 	Sep                   = string(os.PathSeparator) // 路径分割符
 	SplitFlag             = "@JRSA@"                 // 字符串拼接的断点标记
+)
+
+// 快照类型
+const (
+	SnapTypeLVM = "lvm"
+	SnapTypeVSS = "vss"
 )

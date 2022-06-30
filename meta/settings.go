@@ -57,6 +57,8 @@ const (
 	DefaultWalkerCores           = 4                                         // 路径枚举器的默认并发枚举线程数
 	DefaultTailEventHandleSecs   = 3 * time.Second                           // 尾更新事件最多等待多少时间
 	DefaultMonitorRestoreHang    = 5 * time.Second                           // 每隔多少秒监控一次恢复任务是否完成
+	MaxTimeoutWhenFullEnd        = 3 * time.Hour                             // 全量备份临近结束时，进入CDP状态的最大超时时间
+	CycleQuerySecsWhenFullEnd    = 30 * time.Second                          // 全量备份临近结束时，每隔多久时间检测一次全量任务是否完成
 	RestoreErrFixStatusRetrySecs = 10 * time.Second                          // 恢复任务失败时，修正任务状态的重试间隔时间
 	DefaultFileMode              = 0666                                      // 默认文件权限
 	IgnoreFlag                   = "IGNORE_a4b4f7ec876842618aaaeeca85766096" // 同步流程忽略带有标记

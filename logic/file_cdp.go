@@ -109,6 +109,7 @@ type CDPExecutor struct {
 	confObj       *models.ConfigModel     // 配置对象
 	taskObj       *models.BackupTaskModel // 任务对象
 	reporter      *Reporter               // 日志上报器
+	snapCreator   *SnapCreator            // 快照定时创建
 	logRecycle    *LogRecycle             // 日志清理
 	progress      *Progress               // 数据量、文件数完成进度上报器
 	listFilter    *Grep                   // 黑白名单过滤器
@@ -175,7 +176,7 @@ func LoadCDP(ip string, conf int64, reload bool) (err error) {
 		cdp    *CDPExecutor
 		config models.ConfigModel
 	)
-	dp, err = models.NewDBProxy(ip)
+	dp, err = models.NewDBProxyWithInit(ip)
 	if err != nil {
 		return
 	}
@@ -206,7 +207,25 @@ func LoadCDP(ip string, conf int64, reload bool) (err error) {
 		}
 	}
 
-	cdp.reporter = NewReporter(cdp.DBDriver.DB, cdp.confObj.ID, cdp.taskObj.ID, meta.TaskTypeBackup)
+	if err = cdp.confObj.LoadsJsonFields(cdp.DBDriver.DB); err != nil {
+		return
+	}
+	logger.Fmt.Infof("LoadCDP CONFIG is:\n%v", pretty.Sprint(cdp.confObj))
+
+	cdp.reporter = NewReporter(
+		cdp.DBDriver.DB,
+		cdp.confObj.ID,
+		cdp.taskObj.ID,
+		meta.TaskTypeBackup,
+		cdp.confObj.ExtInfoJson.LogKeepPolicy.Levels)
+	cdp.snapCreator = &SnapCreator{
+		config:   cdp.confObj,
+		task:     cdp.taskObj,
+		db:       cdp.DBDriver.DB,
+		reporter: cdp.reporter,
+		stop:     false,
+	}
+
 	_ = cdp.reporter.ReportInfo(StepConfigEnable)
 	if !cdp.isReload {
 		_ = cdp.reporter.ReportInfo(StepInitCDP)
@@ -260,7 +279,7 @@ func (c *CDPExecutor) StartWithRetry() (err error) {
 				_ = c.reporter.ReportError(StepRetryCDPMatchSer)
 				break
 			}
-			if c.DBDriver, err = models.NewDBProxy(c.confObj.ExtInfoJson.ServerAddress); err != nil {
+			if c.DBDriver, err = models.NewDBProxyWithInit(c.confObj.ExtInfoJson.ServerAddress); err != nil {
 				logger.Fmt.Infof("%v.StartWithRetry. will sleep 5s...", c.Str())
 			} else {
 				_ = c.reporter.ReportInfo(StepConnDB)
@@ -310,7 +329,7 @@ func (c *CDPExecutor) Start() (ec ErrorCode) {
 	c.progress = NewProgress(meta.DefaultReportProcessSecs,
 		c.taskObj.ID, c.DBDriver.DB, c.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeBackup)
 	c.logRecycle = NewLogRecycle(c.confObj.ID, c.taskObj.ID,
-		c.confObj.ExtInfoJson.LogKeepPolicy.Days, c.confObj.ExtInfoJson.LogKeepPolicy.Level, c.DBDriver.DB)
+		c.confObj.ExtInfoJson.LogKeepPolicy.Days, c.DBDriver.DB)
 
 	go c.monitorStopNotify()
 	go c.logRecycle.Start()
@@ -363,6 +382,7 @@ func (c *CDPExecutor) stop() {
 	atomic.StoreInt32(c.hangSignal, 1)
 	c.stopBackupProxy()
 	c.progress.Stop()
+	c.snapCreator.SetStop()
 }
 
 func (c *CDPExecutor) stopBackupProxy() {
@@ -521,10 +541,6 @@ func (c *CDPExecutor) logicWhenNormal() (err error) {
 
 func (c *CDPExecutor) moreInit() (err error) {
 	c.listFilter = NewGrep(c.confObj.Include, c.confObj.Exclude)
-	if err = c.confObj.LoadsJsonFields(c.DBDriver.DB); err != nil {
-		return
-	}
-	logger.Fmt.Infof("%v.moreInit CONFIG is:\n%v", c.Str(), pretty.Sprint(c.confObj))
 	logger.Fmt.Infof("%v.modeInit TASK is:\n%v", c.Str(), c.taskObj.String())
 
 	if c.is2host() {
@@ -630,7 +646,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		if c.isStopped() {
 			return
 		}
-		//logger.Fmt.Debugf("%v | [监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", c.Str(), fwo.Path)
+		//logger.Fmt.Debugf("%v | [监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", c.Str(), fwo.Flag)
 		wg.Add(1)
 		if err = c.uploadOneFile(pool, fwo, wg); err != nil {
 			return
@@ -644,6 +660,9 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		return
 	} else {
 		//c.fullWG.Wait()
+		c.waitUntilNoSyncingFile()
+		c.snapCreator.start() // 全量备份完毕后，随即创建快照
+		_ = c.reporter.ReportInfo(StepStartSnapCreator)
 	}
 	if c.taskObj.Status == meta.CDPCOPYING {
 		err = c.convertCopying2CDPing()
@@ -653,6 +672,15 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		err = errors.New("can't go from state `CDPUNSTART` to state `CDPCDPING`")
 	}
 	return
+}
+
+func (c *CDPExecutor) waitUntilNoSyncingFile() {
+	for {
+		if c.fbp.fullPool.Running() == 0 && c.fbp.fullPool.Waiting() == 0 {
+			break
+		}
+		time.Sleep(meta.CycleQuerySecsWhenFullEnd)
+	}
 }
 
 func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, wg *sync.WaitGroup) (err error) {
@@ -736,6 +764,9 @@ func (c *CDPExecutor) uploadWithRetry(ffm models.EventFileModel, retry int) (err
 			err = fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
 		}
 		if err == nil {
+			if c.confObj.ExtInfoJson.LocalDeleteAfterBackup {
+				_ = os.Remove(ffm.Path)
+			}
 			return nil
 		}
 	}
@@ -746,6 +777,7 @@ func (c *CDPExecutor) uploadWithRetry(ffm models.EventFileModel, retry int) (err
 func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err error) {
 	r, w := io.Pipe()
 	writer := multipart.NewWriter(w)
+	defer r.Close()
 
 	// FIX: 优化大文件传输时内存占用过大的问题
 	go func() {
@@ -770,13 +802,18 @@ func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err 
 		return err
 	}
 	req.Header.Add("Content-Type", writer.FormDataContentType())
-
-	client := &http.Client{}
+	client := new(http.Client)
+	req.Close = true
 	resp, err := client.Do(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "EOF") {
+			logger.Fmt.Warnf("%v.upload2host upload `%v` POST EOF", c.Str(), ffm.Path)
+			return nil
+		}
 		logger.Fmt.Errorf("%v.upload2host client.Do ERR=%v", c.Str(), err)
 		return err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		c.progress.AddNum(1)
 		c.progress.AddSize(ffm.Size)
@@ -973,8 +1010,8 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 				break
 			}
 			fallthrough
-		case meta.Win32EventCreate:
-			fallthrough
+		//case meta.Win32EventCreate:
+		//	fallthrough
 		case meta.Win32EventRenameTo:
 			fallthrough
 		case meta.Win32EventUpdate:
@@ -1165,10 +1202,10 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 		}
 		// 说明新的变更事件已经产生，且已存在于c.watcherQueue中，所以忽略本次事件
 		if fi.ModTime().Unix() > fwo.Time {
-			//logger.Fmt.Debugf("忽略过期事件 %v", fwo.Path)
+			//logger.Fmt.Debugf("忽略过期事件 %v", fwo.Flag)
 			return nil
 		}
-		//logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Path)
+		//logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Flag)
 		if w != nil {
 			w.watcherQueue <- fwo
 		}

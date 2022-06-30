@@ -1,15 +1,23 @@
 package tools
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	goCmd "github.com/go-cmd/cmd"
 	"github.com/journeymidnight/aws-sdk-go/aws"
 	"github.com/journeymidnight/aws-sdk-go/aws/credentials"
 	"github.com/journeymidnight/aws-sdk-go/aws/session"
 	"github.com/journeymidnight/aws-sdk-go/service/s3"
 	gos3 "github.com/kisun-bit/go-s3"
+	"github.com/shirou/gopsutil/disk"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
+	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/meta"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -125,27 +133,68 @@ func CorrectDirWithPlatform(dir string, win bool) string {
 	return dir
 }
 
-//func HumanizeBytes(bytesNum int64) string {
-//	var size string
-//
-//	if valPB := bytesNum / (1 << 50); valPB != 0 {
-//		num1, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<50)), 64)
-//		size = fmt.Sprintf("%vPB", num1)
-//	} else if valTB := bytesNum / (1 << 40); valTB != 0 {
-//		num2, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<40)), 64)
-//		size = fmt.Sprintf("%vTB", num2)
-//	} else if valGB := bytesNum / (1 << 30); valGB != 0 {
-//		num3, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<30)), 64)
-//		size = fmt.Sprintf("%vGB", num3)
-//	} else if valMB := bytesNum / (1 << 20); valMB != 0 {
-//		num4, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<20)), 64)
-//		size = fmt.Sprintf("%vMB", num4)
-//	} else if valKB := bytesNum / (1 << 10); valKB != 0 {
-//		num5, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<10)), 64)
-//		size = fmt.Sprintf("%vKB", num5)
-//	} else {
-//		size = fmt.Sprintf("%vB", bytesNum)
-//	}
-//
-//	return size
-//}
+func HumanizeBytes(bytesNum int64) string {
+	var size string
+
+	if valPB := bytesNum / (1 << 50); valPB != 0 {
+		num1, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<50)), 64)
+		size = fmt.Sprintf("%vPB", num1)
+	} else if valTB := bytesNum / (1 << 40); valTB != 0 {
+		num2, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<40)), 64)
+		size = fmt.Sprintf("%vTB", num2)
+	} else if valGB := bytesNum / (1 << 30); valGB != 0 {
+		num3, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<30)), 64)
+		size = fmt.Sprintf("%vGB", num3)
+	} else if valMB := bytesNum / (1 << 20); valMB != 0 {
+		num4, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<20)), 64)
+		size = fmt.Sprintf("%vMB", num4)
+	} else if valKB := bytesNum / (1 << 10); valKB != 0 {
+		num5, _ := strconv.ParseFloat(fmt.Sprintf("%.2f", float64(bytesNum)/float64(1<<10)), 64)
+		size = fmt.Sprintf("%vKB", num5)
+	} else {
+		size = fmt.Sprintf("%vB", bytesNum)
+	}
+
+	return size
+}
+
+func GBK2UTF8(s []byte) ([]byte, error) {
+	reader := transform.NewReader(bytes.NewReader(s), simplifiedchinese.GBK.NewDecoder())
+	d, e := ioutil.ReadAll(reader)
+	if e != nil {
+		return nil, e
+	}
+	return d, nil
+}
+
+func Exec(caller, args string) (r int, out string, err error) {
+	cs := strings.Fields(args)
+	for i := 0; i < len(cs[1:]); i++ {
+		cs[i] = strings.Trim(cs[i], "\"")
+	}
+	c := goCmd.NewCmd(caller, cs...)
+	s := <-c.Start()
+	out = strings.Join(s.Stdout, "\n")
+	if meta.IsWin {
+		ob, err := GBK2UTF8([]byte(out))
+		if err == nil {
+			out = string(ob)
+		}
+	}
+	return s.Exit, out, s.Error
+}
+
+func VolumeUsage(letter string) (va *disk.UsageStat, err error) {
+	parts, err := disk.Partitions(true)
+	if err != nil {
+		return nil, err
+	}
+	for _, part := range parts {
+		if !strings.HasPrefix(part.Device, strings.ToUpper(letter)) {
+			continue
+		}
+		va, err = disk.Usage(part.Mountpoint)
+		return
+	}
+	return nil, errors.New("volume usage not fount")
+}

@@ -9,20 +9,20 @@ import (
 )
 
 type LogRecycle struct {
-	ConfigID, TaskID      int64
-	KeepDays, LowestLevel int
-	DB                    *gorm.DB
+	ConfigID, TaskID int64
+	KeepDays         int
+	DB               *gorm.DB
 }
 
-func NewLogRecycle(config, task int64, keep, level int, db *gorm.DB) (lr *LogRecycle) {
+func NewLogRecycle(config, task int64, keep int, db *gorm.DB) (lr *LogRecycle) {
 	lr = new(LogRecycle)
-	lr.ConfigID, lr.TaskID, lr.KeepDays, lr.LowestLevel, lr.DB = config, task, keep, level, db
+	lr.ConfigID, lr.TaskID, lr.KeepDays, lr.DB = config, task, keep, db
 	return
 }
 
 func (lr *LogRecycle) Str() string {
-	return fmt.Sprintf("<LogRecycle(Config=%v, TaskID=%v, KeepDays=%v, LowestLevel=%s)>",
-		lr.ConfigID, lr.TaskID, lr.KeepDays, DescribeLogLevel(lr.LowestLevel))
+	return fmt.Sprintf("<LogRecycle(Config=%v, TaskID=%v, KeepDays=%v>",
+		lr.ConfigID, lr.TaskID, lr.KeepDays)
 }
 
 func (lr *LogRecycle) Start() {
@@ -50,6 +50,9 @@ func (lr *LogRecycle) logic() {
 		validTime := time.Now().Add(d)
 		if err = models.DeleteCDPIOLogsByTime(lr.DB, lr.ConfigID, validTime.Unix()); err != nil {
 			logger.Fmt.Warnf("%v.DeleteCDPIOLogsByTime Err=%v", lr.Str(), err)
+		}
+		if err = models.DeleteCDPSnapLogsByTime(lr.DB, lr.ConfigID, validTime.Unix()); err != nil {
+			logger.Fmt.Warnf("%v.DeleteCDPSnapLogsByTime Err=%v", lr.Str(), err)
 		}
 	}
 }

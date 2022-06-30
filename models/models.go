@@ -28,22 +28,22 @@ func NewDBInstanceByIP(ip string) (db *gorm.DB, err error) {
 	)
 }
 
-func NewDBProxy(ip string) (fvb *DBProxy, err error) {
+func NewDBProxyWithInit(ip string) (fvb *DBProxy, err error) {
 	fvb = new(DBProxy)
 	if fvb.DB, err = NewDBInstanceByIP(ip); err != nil {
-		logger.Fmt.Errorf("NewDBProxy gorm.Open err=%v", err)
+		logger.Fmt.Errorf("NewDBProxyWithInit gorm.Open err=%v", err)
 		return
 	}
 	if err = fvb.initSchema(); err != nil {
-		logger.Fmt.Errorf("NewDBProxy initSchema err=%v", err)
+		logger.Fmt.Errorf("NewDBProxyWithInit initSchema err=%v", err)
 		return
 	}
 	if err = fvb.migrate(); err != nil {
-		logger.Fmt.Errorf("NewDBProxy migrate err=%v", err)
+		logger.Fmt.Errorf("NewDBProxyWithInit migrate err=%v", err)
 		return
 	}
 	if err = fvb.sharding(); err != nil {
-		logger.Fmt.Errorf("NewDBProxy sharding err=%v", err)
+		logger.Fmt.Errorf("NewDBProxyWithInit sharding err=%v", err)
 		return
 	}
 	return
@@ -63,6 +63,9 @@ func (fvb *DBProxy) migrate() (err error) {
 		return
 	}
 	if err = fvb.DB.AutoMigrate(&ClientNode{}); err != nil {
+		return
+	}
+	if err = fvb.DB.AutoMigrate(&Snapshot{}); err != nil {
 		return
 	}
 	return

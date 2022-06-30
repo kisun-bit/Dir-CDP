@@ -54,7 +54,7 @@ func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *Resto
 	r.exitNotifyOnce = new(sync.Once)
 	r.stopSignal = new(int32)
 	r.monitor = NewMonitorWithRestore(r)
-	r.reporter = NewReporter(dp.DB, r.confObj.ID, r.taskObj.ID, meta.TaskTypeRestore)
+	r.reporter = NewReporter(dp.DB, r.confObj.ID, r.taskObj.ID, meta.TaskTypeRestore, AllLevels)
 	_ = r.reporter.ReportInfo(StepInitRestoreTask)
 
 	if err = r.taskObj.LoadJsonFields(); err != nil {
@@ -281,7 +281,7 @@ func (r *RestoreTask) download() {
 	}
 
 	for {
-		if r.pool.Running() != 0 {
+		if r.pool.Running() != 0 || r.pool.Waiting() != 0 {
 			time.Sleep(meta.DefaultMonitorRestoreHang)
 		} else {
 			break
@@ -394,8 +394,10 @@ func (r *RestoreTask) _downloadFromHost(
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Connection", "Keep-Alive")
+	req.Close = true
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		logger.Fmt.Warnf("%v Do err=%v", r.Str(), err)
 		return err

@@ -15,6 +15,7 @@ func Upload(c *gin.Context) {
 
 	file, err := c.FormFile("filename")
 	if err != nil {
+		logger.Fmt.Warnf("Upload file=%v ERR=%v", file, err)
 		appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
 		return
 	}

@@ -12,13 +12,20 @@ import (
 )
 
 type ConfigModelExtInfo struct {
-	ServerAddress string        `json:"server_address"`
-	LogKeepPolicy LogKeepPolicy `json:"log_keep_policy"`
+	ServerAddress          string         `json:"server_address"`
+	LogKeepPolicy          LogKeepPolicy  `json:"log_keep_policy"`
+	SnapshotPolicy         SnapshotPolicy `json:"snapshot_policy"`
+	LocalDeleteAfterBackup bool           `json:"delete_after_backup"`
+}
+
+type SnapshotPolicy struct {
+	CycleSecs int64 `json:"cycle_secs"`
+	Keep      int64 `json:"keep"`
 }
 
 type LogKeepPolicy struct {
-	Days  int `json:"days"`
-	Level int `json:"level"` // 1-debug, 2-info, 3-warn, 4-error
+	Days   int   `json:"days"`
+	Levels []int `json:"level"` // 1-debug, 2-info, 3-warn, 4-error
 }
 
 type ConfigModelTimeStrategy struct {
@@ -35,7 +42,7 @@ type ConfigModelTarget struct {
 type BackupDirMap struct {
 	LocalOrigin                    string `json:"origin"`    // 本地备份源目录
 	StorageBucket                  string `json:"bucket"`    // 目标桶
-	StoragePrefixForBucketOrRemote string `json:"target"`    // 目标存储的前缀、目录
+	StoragePrefixForBucketOrRemote string `json:"Target"`    // 目标存储的前缀、目录
 	StorageVolume                  string `json:"volume"`    // 目标卷
 	LocalEnableRecursion           bool   `json:"recursion"` // 是否支持递归
 	LocalEnabledDepth              int    `json:"depth"`     // 指定备份深度
@@ -55,14 +62,14 @@ type ConfigModel struct {
 		{
 			"origin": "/opt/dir1",
 			"bucket": "",
-			"target": "/opt/tmp",
+			"Target": "/opt/tmp",
 			"recursion": true,
 			"depth": -1,
 		},
 		{
 			"origin": "/opt/dir1",
 			"bucket": "",
-			"target": "/opt/tmp",
+			"Target": "/opt/tmp",
 			"recursion": false,
 			"depth": -1,
 		},
@@ -92,7 +99,7 @@ type ConfigModel struct {
 	EnableVersion bool   `gorm:"column:enable_version;default:t"` // 启用版本, 默认为True
 	Enable        bool   `gorm:"column:enable;default:f"`         // 启用配置
 	/* XXX Target现行逻辑说明
-	target 配置目标目录时，可以指定下述几种类型：
+	Target 配置目标目录时，可以指定下述几种类型：
 	1. 云存储（AWS S3）
 	{
 	    "target_type": "S3",
@@ -227,6 +234,16 @@ func (c *ConfigModel) UniqDirs() (ods []string) {
 	tmp := make([]string, 0)
 	for _, v := range c.DirsMappingJson {
 		tmp = append(tmp, v.LocalOrigin)
+	}
+	return funk.UniqString(tmp)
+}
+
+func (c *ConfigModel) UniqTargetDriveLetters() (ls []string) {
+	tmp := make([]string, 0)
+	for _, v := range c.DirsMappingJson {
+		rs := strings.Split(v.StoragePrefixForBucketOrRemote, ":")
+		letter := fmt.Sprintf(`%v:`, rs[0])
+		tmp = append(tmp, letter)
 	}
 	return funk.UniqString(tmp)
 }

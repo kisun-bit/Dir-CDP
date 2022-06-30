@@ -16,9 +16,9 @@ func Init(c *gin.Context) {
 	ip := com.StrTo(c.Param("ip")).String()
 	logger.Fmt.Infof("[GET] Init | get ip `%v`", ip)
 
-	_, err := models.NewDBProxy(ip)
+	_, err := models.NewDBProxyWithInit(ip)
 	if err != nil {
-		logger.Fmt.Errorf("[GET] Init | NewDBProxy err=`%v`", err)
+		logger.Fmt.Errorf("[GET] Init | NewDBProxyWithInit err=`%v`", err)
 		app.Resp(c, http.StatusBadRequest, statuscode.INITDBPROXYFAILED, nil)
 		return
 	}

@@ -41,11 +41,17 @@ func NewLog(db *gorm.DB, conf, task int64, type_, key, status, message, detail s
 func DeleteCDPStartLogsByTime(db *gorm.DB, conf, time_ int64) (err error) {
 	return db.Where(
 		"conf_id = ? AND time < ? AND key = ?",
-		conf, time.Unix(time_, 0), `''`).Delete(&Logging{}).Error
+		conf, time.Unix(time_, 0), "").Delete(&Logging{}).Error
 }
 
 func DeleteCDPIOLogsByTime(db *gorm.DB, conf, time_ int64) (err error) {
 	return db.Where(
 		"conf_id = ? AND time < ? AND key = ?",
 		conf, time.Unix(time_, 0), meta.RuntimeIOBackup).Delete(&Logging{}).Error
+}
+
+func DeleteCDPSnapLogsByTime(db *gorm.DB, conf, time_ int64) (err error) {
+	return db.Where(
+		"conf_id = ? AND time < ? AND key = ?",
+		conf, time.Unix(time_, 0), meta.RuntimeSnapshot).Delete(&Logging{}).Error
 }

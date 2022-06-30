@@ -92,7 +92,7 @@ func reloadTaskFromOneServer(ip string) (err error) {
 		rs []models.RestoreTaskModel
 	)
 
-	dp, err = models.NewDBProxy(ip)
+	dp, err = models.NewDBProxyWithInit(ip)
 	if err != nil {
 		return
 	}

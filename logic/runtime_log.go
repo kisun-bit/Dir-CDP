@@ -2,6 +2,7 @@ package logic
 
 import (
 	"fmt"
+	"github.com/thoas/go-funk"
 	"gorm.io/gorm"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/models"
@@ -16,6 +17,8 @@ const (
 	LogLevelError
 	LogLevelFatal
 )
+
+var AllLevels = []int{LogLevelTrace, LogLevelDebug, LogLevelInfo, LogLevelWarn, LogLevelError, LogLevelFatal}
 
 func DescribeLogLevel(level int) string {
 	switch level {
@@ -104,26 +107,41 @@ const (
 	StepStartTransfer              = "正在传输数据"
 	StepEndTransfer                = "数据传输完毕"
 	StepClearTask                  = "清理并退出任务"
+	StepStartSnapCreator           = "启用定时快照例程"
+	StepCreateSnapshot             = "对驱动器%v创建快照%v成功"
+	StepCreateSnapshotErr          = "对驱动器%v创建快照失败，原因：%v"
+	StepCreateVersion              = "整合快照，创建副本点%v完成"
+	StepCreateVersionErr           = "整合快照，创建副本点%v失败，原因：%v"
+	StepDeleteSnapshot             = "对驱动器%v删除快照%v成功"
+	StepDeleteSnapshotErr          = "对驱动器%v删除快照失败，原因：%v"
+	StepRecycleVersion             = "销毁快照，回收副本点%v完成"
+	StepRecycleVersionErr          = "销毁快照，回收副本点%v失败，原因：%v"
 )
 
 type Reporter struct {
-	DB   *gorm.DB
-	Conf int64
-	Task int64
-	Type meta.TaskType
+	DB     *gorm.DB
+	Conf   int64
+	Task   int64
+	Type   meta.TaskType
+	Levels []int
 }
 
-func NewReporter(db *gorm.DB, conf, task int64, type_ meta.TaskType) *Reporter {
+func NewReporter(db *gorm.DB, conf, task int64, type_ meta.TaskType, levels []int) *Reporter {
 	return &Reporter{
-		DB:   db,
-		Conf: conf,
-		Task: task,
-		Type: type_,
+		DB:     db,
+		Conf:   conf,
+		Task:   task,
+		Type:   type_,
+		Levels: levels,
 	}
 }
 
 func (re *Reporter) Str() string {
 	return fmt.Sprintf("<Reporter(Conf=%v, Task=%v, Type=%v)>", re.Conf, re.Task, re.Type)
+}
+
+func (re *Reporter) isValid(level int) bool {
+	return funk.InInts(re.Levels, level)
 }
 
 func (re *Reporter) ReportTrace(format string, a ...interface{}) (err error) {
@@ -195,6 +213,9 @@ func (re *Reporter) fatal(key, format string, log bool, a ...interface{}) (err e
 }
 
 func (re *Reporter) _log(level int, key, format string, log bool, a ...interface{}) (err error) {
+	if !re.isValid(level) {
+		return nil
+	}
 	message := fmt.Sprintf(format, a...)
 	if log {
 		logger.Fmt.Infof("%s.%s >>>>>> %s", re.Str(), DescribeLogLevel(level), message)
