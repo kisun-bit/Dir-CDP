@@ -38,6 +38,7 @@ func init() {
 	if err != nil {
 		panic("加载配置失败，服务启动失败")
 	}
+	AppIsDebugMode = ConfigSettings.Mode == "debug"
 	ServerIPs = filepath.Join(ConfigSettings.WorkDir, `server.ips`)
 	HandlerBaseDir = filepath.Join(ConfigSettings.WorkDir, `handles`)
 }
@@ -59,6 +60,7 @@ const (
 	DefaultMonitorRestoreHang    = 5 * time.Second                           // 每隔多少秒监控一次恢复任务是否完成
 	MaxTimeoutWhenFullEnd        = 3 * time.Hour                             // 全量备份临近结束时，进入CDP状态的最大超时时间
 	CycleQuerySecsWhenFullEnd    = 30 * time.Second                          // 全量备份临近结束时，每隔多久时间检测一次全量任务是否完成
+	FullFileSecsWhenCreateEvent  = 5                                         // 针对CTRL+Z容错，创建文件时容错
 	RestoreErrFixStatusRetrySecs = 10 * time.Second                          // 恢复任务失败时，修正任务状态的重试间隔时间
 	DefaultFileMode              = 0666                                      // 默认文件权限
 	IgnoreFlag                   = "IGNORE_a4b4f7ec876842618aaaeeca85766096" // 同步流程忽略带有标记
@@ -69,4 +71,5 @@ var (
 	IsWin          = runtime.GOOS == "windows" // 系统平台
 	ServerIPs      string                      // 备份服务器IP地址信息（可能存在多个）
 	HandlerBaseDir string                      // 备份过程的锁文件目录
+	AppIsDebugMode = false
 )

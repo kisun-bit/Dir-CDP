@@ -12,6 +12,7 @@ type LogRecycle struct {
 	ConfigID, TaskID int64
 	KeepDays         int
 	DB               *gorm.DB
+	Stop             bool
 }
 
 func NewLogRecycle(config, task int64, keep int, db *gorm.DB) (lr *LogRecycle) {
@@ -29,12 +30,19 @@ func (lr *LogRecycle) Start() {
 	lr.logic()
 }
 
+func (lr *LogRecycle) SetStop() {
+	if lr.Stop {
+		return
+	}
+	lr.Stop = true
+}
+
 func (lr *LogRecycle) logic() {
 	defer func() {
 		logger.Fmt.Infof("%v.logic exit...", lr.Str())
 	}()
 
-	if lr.KeepDays == meta.UnsetInt {
+	if lr.KeepDays == meta.UnsetInt || lr.KeepDays == 0 {
 		logger.Fmt.Infof("%v.logic permanent log", lr.Str())
 		return
 	}
@@ -46,6 +54,9 @@ func (lr *LogRecycle) logic() {
 	}
 
 	for {
+		if lr.Stop {
+			break
+		}
 		time.Sleep(meta.OneDay)
 		validTime := time.Now().Add(d)
 		if err = models.DeleteCDPIOLogsByTime(lr.DB, lr.ConfigID, validTime.Unix()); err != nil {

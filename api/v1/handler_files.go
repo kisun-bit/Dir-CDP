@@ -8,6 +8,7 @@ import (
 	"jingrongshuan/rongan-fnotify/meta"
 	"net/http"
 	"os"
+	"path/filepath"
 )
 
 func Upload(c *gin.Context) {
@@ -19,9 +20,14 @@ func Upload(c *gin.Context) {
 		appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
 		return
 	}
+	dir := filepath.Dir(file.Filename)
+	if _, notExisted := os.Stat(dir); notExisted != nil {
+		_ = os.MkdirAll(dir, meta.DefaultFileMode)
+	}
 
 	err = c.SaveUploadedFile(file, file.Filename)
 	if err != nil {
+		logger.Fmt.Warnf("Upload `%v` ERR=%v", file.Filename, err)
 		appG.Response(http.StatusBadRequest, statuscode.SYNCFILEFAILED, nil)
 		return
 	}

@@ -108,6 +108,7 @@ const (
 	StepEndTransfer                = "数据传输完毕"
 	StepClearTask                  = "清理并退出任务"
 	StepStartSnapCreator           = "启用定时快照例程"
+	StepScanDel                    = "检测中断期间的删除事件"
 	StepCreateSnapshot             = "对驱动器%v创建快照%v成功"
 	StepCreateSnapshotErr          = "对驱动器%v创建快照失败，原因：%v"
 	StepCreateVersion              = "整合快照，创建副本点%v完成"

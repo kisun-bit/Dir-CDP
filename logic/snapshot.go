@@ -355,7 +355,7 @@ func DeleteVSS(snap string) (err error) {
 	cs := fmt.Sprintf(`-ds=%s`, snap)
 	r, o, err := tools.Exec(VShadow, cs)
 	if r != 0 {
-		err = fmt.Errorf("failed to revert shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
+		err = fmt.Errorf("failed to delete shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
 		return
 	}
 	return nil

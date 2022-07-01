@@ -164,13 +164,16 @@ func (w *Win32Watcher) collectChangeInfo() {
 		info.Path = path
 		info.Event = tools.ConvertToWin32Event(raw.Action)
 		info.Name = name
+		if meta.AppIsDebugMode {
+			logging.Logger.Fmt.Debugf("%v事件 >>>>>>>>>> `%v`", info.Event.Str(), info.Path)
+		}
 
 		if !w.isValidDepth(info.Path) {
 			break
 		}
 
 		if w.NeedDelete(info.Event) {
-			fmt.Println(info.Path)
+			//fmt.Println(info.Path)
 		} else {
 			fi, err := os.Stat(path)
 			if err != nil {

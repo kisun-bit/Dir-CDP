@@ -383,6 +383,7 @@ func (c *CDPExecutor) stop() {
 	c.stopBackupProxy()
 	c.progress.Stop()
 	c.snapCreator.SetStop()
+	c.logRecycle.SetStop()
 }
 
 func (c *CDPExecutor) stopBackupProxy() {
@@ -484,7 +485,7 @@ func (c *CDPExecutor) convertCopying2CDPing() (err error) {
 }
 
 func (c *CDPExecutor) logicWhenReload() (err error) {
-	_ = c.deleteRemoteWhenReload()
+	_ = c.deleteWhenDisableVersion()
 	_ = c.reporter.ReportInfo(StepStartFullAndIncrWhenReload)
 	if c.taskObj.Status == meta.CDPUNSTART {
 		if err = c.convertUnStart2Copying(); err != nil {
@@ -646,7 +647,9 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 		if c.isStopped() {
 			return
 		}
-		//logger.Fmt.Debugf("%v | [监控捕捉] <<<<<<<<<<<<<<<<<<<<<<<<< %v", c.Str(), fwo.Flag)
+		if meta.AppIsDebugMode {
+			logger.Fmt.Debugf("%v | 上传文件`%v`", c.Str(), fwo.Path)
+		}
 		wg.Add(1)
 		if err = c.uploadOneFile(pool, fwo, wg); err != nil {
 			return
@@ -661,8 +664,10 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 	} else {
 		//c.fullWG.Wait()
 		c.waitUntilNoSyncingFile()
-		c.snapCreator.start() // 全量备份完毕后，随即创建快照
-		_ = c.reporter.ReportInfo(StepStartSnapCreator)
+		if !c.snapCreator.disable() {
+			c.snapCreator.start() // 全量备份完毕后，随即创建快照
+			_ = c.reporter.ReportInfo(StepStartSnapCreator)
+		}
 	}
 	if c.taskObj.Status == meta.CDPCOPYING {
 		err = c.convertCopying2CDPing()
@@ -683,37 +688,37 @@ func (c *CDPExecutor) waitUntilNoSyncingFile() {
 	}
 }
 
-func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, wg *sync.WaitGroup) (err error) {
+func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, wg *sync.WaitGroup) (_ error) {
 	return pool.Submit(func() {
-		var err error
+		var err_ error
 		defer func() {
-			if err == nil && fwo.Event == meta.Win32EventFullScan.Str() {
+			if err_ == nil && fwo.Event == meta.Win32EventFullScan.Str() {
 				_ = c.reporter.ReportDebugWithoutLogWithKey(
 					meta.RuntimeIOBackup, StepFileScanUpS, meta.EventDesc[fwo.Event], fwo.Path)
-			} else if err == nil && fwo.Event != meta.Win32EventFullScan.Str() {
+			} else if err_ == nil && fwo.Event != meta.Win32EventFullScan.Str() {
 				_ = c.reporter.ReportDebugWithoutLogWithKey(
 					meta.RuntimeIOBackup, StepFileEventUpS, meta.EventDesc[fwo.Event], fwo.Path)
-			} else if err != nil && fwo.Event == meta.Win32EventFullScan.Str() {
+			} else if err_ != nil && fwo.Event == meta.Win32EventFullScan.Str() {
 				_ = c.reporter.ReportWarnWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileScanUpF, meta.EventDesc[fwo.Event], fwo.Path, err)
+					meta.RuntimeIOBackup, StepFileScanUpF, meta.EventDesc[fwo.Event], fwo.Path, err_)
 			} else {
 				_ = c.reporter.ReportWarnWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileEventUpF, meta.EventDesc[fwo.Event], fwo.Path, err)
+					meta.RuntimeIOBackup, StepFileEventUpF, meta.EventDesc[fwo.Event], fwo.Path, err_)
 			}
 		}()
 
 		defer wg.Done()
-		err = c.upload2DiffStorage(fwo)
-		if err == nil {
+		err_ = c.upload2DiffStorage(fwo)
+		if err_ == nil {
 			return
 		}
 
 		// 连接不上备份服务器或SQL错误（不对文件类型错误做处理）
-		if strings.Contains(err.Error(), "SQLSTATE") {
-			logger.Fmt.Warnf("%v.uploadOneFile ERR=%v", c.Str(), err)
+		if strings.Contains(err_.Error(), "SQLSTATE") {
+			logger.Fmt.Warnf("%v.uploadOneFile ERR=%v", c.Str(), err_)
 			return
 		} else {
-			err = nil
+			err_ = nil
 		}
 	})
 }
@@ -723,15 +728,16 @@ func (c *CDPExecutor) upload2DiffStorage(ffm models.EventFileModel) (err error) 
 
 	defer func() {
 		if err == nil {
-			if err = models.UpdateFileFlowStatus(
-				c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusFinished); err != nil {
+			if e := models.UpdateFileFlowStatus(
+				c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusFinished); e != nil {
 				logger.Fmt.Warnf("%v.upload2DiffStorage UpdateFileFlowStatus (f%v) to `FINISHED` ERR=%v",
-					c.Str(), ffm.Path, err)
+					c.Str(), ffm.Path, e)
 			}
 		} else {
-			if err = models.UpdateFileFlowStatus(c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusError); err != nil {
+			logger.Fmt.Warnf("%v.upload2DiffStorage upload `%v` ERR=%v", c.Str(), ffm.Path, err)
+			if e := models.UpdateFileFlowStatus(c.DBDriver.DB, c.confObj.ID, ffm.ID, meta.FFStatusError); e != nil {
 				logger.Fmt.Warnf(
-					"%v.uploadOneFile UpdateFileFlowStatus (f%v) ERR=%v", c.Str(), ffm.ID, err)
+					"%v.uploadOneFile UpdateFileFlowStatus (f%v) ERR=%v", c.Str(), ffm.ID, e)
 			}
 		}
 	}()
@@ -861,11 +867,13 @@ func (c *CDPExecutor) incr() {
 	}()
 }
 
-func (c *CDPExecutor) deleteRemoteWhenReload() (err error) {
-	if !c.confObj.EnableVersion || !c.isReload {
-		logger.Fmt.Infof("%v.deleteRemoteWhenReload skip...")
+func (c *CDPExecutor) deleteWhenDisableVersion() (err error) {
+	if c.confObj.EnableVersion {
+		logger.Fmt.Infof("%v.deleteWhenDisableVersion skip...", c.Str())
 		return nil
 	}
+
+	_ = c.reporter.ReportInfo(StepScanDel)
 
 	var (
 		row *sql.Rows
@@ -874,7 +882,7 @@ func (c *CDPExecutor) deleteRemoteWhenReload() (err error) {
 
 	if row, err = models.QueryFileIteratorByConfig(
 		c.DBDriver.DB, c.taskObj.ConfID); err != nil {
-		logger.Fmt.Errorf("%v.deleteRemoteWhenReload Error=%v", c.Str(), err)
+		logger.Fmt.Errorf("%v.deleteWhenDisableVersion Error=%v", c.Str(), err)
 		return err
 	}
 	defer row.Close()
@@ -884,18 +892,12 @@ func (c *CDPExecutor) deleteRemoteWhenReload() (err error) {
 			return nil
 		}
 		if err = c.DBDriver.DB.ScanRows(row, &ffm); err != nil {
-			logger.Fmt.Errorf("%v.deleteRemoteWhenReload. ScanRows-Err=%v", c.Str(), err)
+			logger.Fmt.Errorf("%v.deleteWhenDisableVersion. ScanRows-Err=%v", c.Str(), err)
 			return err
 		}
-		if _, e := os.Stat(ffm.Path); e != nil {
-			// 如果源机不存在则删除备机处的同名文件
-			if e := c.deleteFilesInRemote(ffm.Path); e == nil {
-				_ = c.reporter.ReportDebugWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileEventDel, "扫描", ffm.Path)
-			} else {
-				_ = c.reporter.ReportErrorWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileEventDelF, "扫描", ffm.Path, e)
-			}
+		path := filepath.Join(ffm.Parent, ffm.Name)
+		if _, e := os.Stat(path); e != nil {
+			_ = c.deleteFiles(ffm.Path, ffm.Name, meta.EventDesc[meta.Win32EventFullScan.Str()])
 		}
 	}
 	return nil
@@ -998,20 +1000,12 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 		case meta.Win32EventDelete:
 			fallthrough
 		case meta.Win32EventRenameFrom:
-			if !c.confObj.EnableVersion && c.is2host() {
-				// 如果备机存在则删除
-				if e := c.deleteFilesInRemote(fwo.Path); e == nil {
-					_ = c.reporter.ReportDebugWithoutLogWithKey(
-						meta.RuntimeIOBackup, StepFileEventDel, meta.EventDesc[fwo.Event.Str()], fwo.Path)
-				} else {
-					_ = c.reporter.ReportWarnWithoutLogWithKey(
-						meta.RuntimeIOBackup, StepFileEventDelF, meta.EventDesc[fwo.Event.Str()], fwo.Path, e)
-				}
-				break
+			if !c.confObj.EnableVersion {
+				_ = c.deleteFiles(fwo.Path, fwo.Name, meta.EventCode[fwo.Event])
 			}
+			continue
+		case meta.Win32EventCreate:
 			fallthrough
-		//case meta.Win32EventCreate:
-		//	fallthrough
 		case meta.Win32EventRenameTo:
 			fallthrough
 		case meta.Win32EventUpdate:
@@ -1028,7 +1022,19 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 					}
 					w.watcherPatch.Store(fwo) // 用新文件覆盖掉旧文件记录
 				} else {
-					w.watcherPatch.Store(fwo) // 更新Event
+					// CTRL+V拷贝文件会产生create、update事件集
+					// - 若本次到来的是同名文件的update事件且上一次事件是create事件
+					//   则忽略本次的create、update事件集
+					// - 否则更新Event
+					if last.Event == meta.Win32EventCreate && fwo.Event == meta.Win32EventUpdate {
+						if meta.AppIsDebugMode {
+							logger.Fmt.Infof("拷贝未结束事件， file=`%v`", fwo.Path)
+						}
+						w.watcherPatch.Del()
+						continue
+					} else {
+						w.watcherPatch.Store(fwo) // 更新Event
+					}
 				}
 			}
 		}
@@ -1102,12 +1108,41 @@ func (c *CDPExecutor) startWatchers() (err error) {
 	return
 }
 
-func (c *CDPExecutor) deleteFilesInRemote(path string) (err error) {
+func (c *CDPExecutor) deleteFiles(path, name, eventDesc string) (err error) {
+	if c.is2host() {
+		// 如果备机存在则删除
+		if meta.AppIsDebugMode {
+			logger.Fmt.Debugf("file=`%v`, will delete in remote host", path)
+		}
+		if e := c.deleteFilesInRemote(path, name); e == nil {
+			_ = c.reporter.ReportDebugWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileEventDel, eventDesc, path)
+		} else {
+			_ = c.reporter.ReportWarnWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileEventDelF, eventDesc, path, e)
+		}
+	} else if c.is2s3() {
+		if meta.AppIsDebugMode {
+			logger.Fmt.Debugf("file=`%v`, will delete in s3", path)
+		}
+		// 如果对象存储存在则删除
+		if e := c.deleteFilesInS3(path, name); e == nil {
+			_ = c.reporter.ReportDebugWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileEventDel, eventDesc, path)
+		} else {
+			_ = c.reporter.ReportWarnWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileEventDelF, eventDesc, path, e)
+		}
+	}
+	return nil
+}
+
+func (c *CDPExecutor) deleteFilesInRemote(path, name string) (err error) {
 	if c.storage.deleteSession == meta.UnsetStr {
 		return errors.New("lack address of delete session")
 	}
 
-	fs, e := models.QueryNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path)
+	fs, e := models.QueryNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path, name)
 	if e != nil {
 		logger.Fmt.Errorf("%v.QueryNoVersionFilesByPath ERR=%v", c.Str(), e)
 	}
@@ -1129,6 +1164,34 @@ func (c *CDPExecutor) deleteFilesInRemote(path string) (err error) {
 		if resp.R.StatusCode != http.StatusOK {
 			err = errors.New("delete failed with 400 code")
 			continue
+		}
+	}
+
+	return models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path)
+}
+
+func (c *CDPExecutor) deleteFilesInS3(path, name string) (err error) {
+	fs, e := models.QueryNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path, name)
+	if e != nil {
+		logger.Fmt.Errorf("%v.QueryNoVersionFilesByPath ERR=%v", c.Str(), e)
+	}
+
+	keys := make([]string, 0)
+	for _, f := range fs {
+		keys = append(keys, f.Storage)
+	}
+
+	_, bucket, _, _, err := c.confObj.SpecifyTarget(path)
+	if err != nil {
+		logger.Fmt.Warnf("%v.deleteFilesInS3 SpecifyTarget ERR=%v", c.Str(), err)
+		return err
+	}
+
+	for _, file := range funk.UniqString(keys) {
+		logger.Fmt.Infof("%v.deleteFilesInS3 delete %v related %v", c.Str(), file, path)
+		e := c.storage.s3Client.DeleteObject(bucket, file)
+		if e != nil {
+			logger.Fmt.Errorf("%v.deleteFilesInS3 DeleteObject ERR=%v", c.Str(), e)
 		}
 	}
 
@@ -1316,28 +1379,34 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 
 	existed := models.ExistedHistoryVersionFile(c.DBDriver.DB, c.confObj.ID, ff.Path)
 	if existed && c.confObj.EnableVersion {
+		// 已备份文件中存在同名文件，且本次任务开启了版本控制
+		// 则生成版本文件
 		ff.Tag = tools.ConvertModTime2VersionFlag(e.Time)
-		ff.Name = fmt.Sprintf("%s.%s", ff.Name, ff.Tag)
+		ff.Name = fmt.Sprintf("%s_%s", ff.Tag, ff.Name)
 	} else if existed && !c.confObj.EnableVersion {
+		// 已备份文件中存在同名文件，且本次任务未开启版本控制
+		// 则删除同名文件记录，并以此新版本文件重新创建
 		if err = models.DeleteByPath(c.DBDriver.DB, c.confObj.ID, ff.Path); err != nil {
 			return
 		}
 	} else {
+		// 已备份文件中不存在同名文件
 		// do nothing
 	}
 
+	storagePath := filepath.Join(ff.Parent, ff.Name)
 	if c.is2host() {
 		origin, remote, err := c.confObj.SpecifyTargetWhenHost(ff.Path)
 		if err != nil {
 			return fm, err
 		}
-		ff.Storage = tools.GenerateRemoteHostKey(origin, ff.Path, remote, tools.IsWin(c.confObj.TargetHostJson.OS))
+		ff.Storage = tools.GenerateRemoteHostKey(origin, storagePath, remote, tools.IsWin(c.confObj.TargetHostJson.OS))
 	} else if c.is2s3() {
 		origin, _, _, prefix, err := c.confObj.SpecifyTarget(ff.Path)
 		if err != nil {
 			return fm, err
 		}
-		ff.Storage = tools.GenerateS3Key(c.confObj.ID, origin, ff.Path, prefix)
+		ff.Storage = tools.GenerateS3Key(c.confObj.ID, origin, storagePath, prefix)
 	} else {
 		return fm, errors.New("unsupported target storage")
 	}

@@ -3,7 +3,7 @@
   "DisplayName": "Rongan CDP Service",
   "Description": "实时数据同步服务",
   "Port": 5111,
-  "Mode": "release",
+  "Mode": "debug",
   "WorkDir": "C:\\rongan\\cdp",
   "Log": "C:\\rongan\\log\\rongan-cdp.log"
 }

@@ -36,7 +36,7 @@ func (c *Snapshot) String() string {
 
 func QueryNeedlessSnapshots(db *gorm.DB, config, task, keep int64) (ss []Snapshot, err error) {
 	r := db.Model(&Snapshot{}).Where(
-		"config=? AND task=?", config, task).Order("time ASC").Offset(int(keep)).Find(&ss)
+		"config=? AND task=?", config, task).Order("time DESC").Offset(int(keep)).Find(&ss)
 	return ss, r.Error
 }
 
