@@ -40,8 +40,8 @@ func NewLog(db *gorm.DB, conf, task int64, type_, key, status, message, detail s
 
 func DeleteCDPStartLogsByTime(db *gorm.DB, conf, time_ int64) (err error) {
 	return db.Where(
-		"conf_id = ? AND time < ? AND key = ?",
-		conf, time.Unix(time_, 0), "").Delete(&Logging{}).Error
+		"conf_id = ? AND time < ? AND key = ? AND task_type = ?",
+		conf, time.Unix(time_, 0), "", string(meta.TaskTypeBackup)).Delete(&Logging{}).Error
 }
 
 func DeleteCDPIOLogsByTime(db *gorm.DB, conf, time_ int64) (err error) {
