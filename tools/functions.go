@@ -15,6 +15,7 @@ import (
 	"golang.org/x/text/transform"
 	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/meta"
+	version2 "jingrongshuan/rongan-fnotify/tools/os_version/version"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -167,10 +168,12 @@ func GBK2UTF8(s []byte) ([]byte, error) {
 	return d, nil
 }
 
-func Exec(caller, args string) (r int, out string, err error) {
+func Process(caller, args string) (r int, out string, err error) {
 	cs := strings.Fields(args)
-	for i := 0; i < len(cs[1:]); i++ {
-		cs[i] = strings.Trim(cs[i], "\"")
+	if len(cs) > 0 {
+		for i := 0; i < len(cs[1:]); i++ {
+			cs[i] = strings.Trim(cs[i], "\"")
+		}
 	}
 	c := goCmd.NewCmd(caller, cs...)
 	s := <-c.Start()
@@ -197,4 +200,37 @@ func VolumeUsage(letter string) (va *disk.UsageStat, err error) {
 		return
 	}
 	return nil, errors.New("volume usage not fount")
+}
+
+var IsWinServer = true
+
+func init() {
+	version, err := version2.OSVersion()
+	if err != nil {
+		fmt.Printf("InitWinServerFlag ERR=%v\n", err)
+		return
+	}
+	if version != meta.UnsetStr {
+		IsWinServer = strings.Contains(version, "Server")
+	}
+}
+
+var DriveLetters = []string{
+	"A:", "B:", "C:", "D:", "E:", "F:", "G:",
+	"H:", "I:", "J:", "K:", "L:", "M:", "N:",
+	"O:", "P:", "Q:", "R:", "S:", "T:", "U:",
+	"V:", "W:", "X:", "Y:", "Z:"}
+
+func MallocDrive() (_ string, err error) {
+	// 使用mountvol命令查询所有的挂载点
+	_, o, _ := Process("mountvol", "")
+	if strings.TrimSpace(o) == meta.UnsetStr {
+		return meta.UnsetStr, errors.New("failed to exec `mountvol`")
+	}
+	for i := range DriveLetters {
+		if !strings.Contains(o, DriveLetters[len(DriveLetters)-i-1]) {
+			return DriveLetters[len(DriveLetters)-i-1], nil
+		}
+	}
+	return meta.UnsetStr, errors.New("the drive letter was used up")
 }

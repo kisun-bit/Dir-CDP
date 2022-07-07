@@ -40,9 +40,9 @@ func QueryNeedlessSnapshots(db *gorm.DB, config, task, keep int64) (ss []Snapsho
 	return ss, r.Error
 }
 
-func QuerySnapshotByID(db *gorm.DB, id int64) (s Snapshot, err error) {
+func QuerySnapshotByVersion(db *gorm.DB, version string) (s Snapshot, err error) {
 	err = db.Model(&Snapshot{}).Where(
-		"id = ?", id).First(&s).Error
+		"version = ?", version).First(&s).Error
 	return
 }
 
@@ -50,8 +50,14 @@ func DeleteSnapshotByID(db *gorm.DB, id int64) (err error) {
 	return db.Where("id = ?", id).Delete(&Snapshot{}).Error
 }
 
-func DeleteSnapshotsAfterID(db *gorm.DB, id int64) (err error) {
-	return db.Where("id >= ?", id).Delete(&Snapshot{}).Error
+func QuerySnapshotsAfterVersion(db *gorm.DB, config, id int64) (ss []Snapshot, err error) {
+	r := db.Model(&Snapshot{}).Where("config = ? AND id >= ?", config, id).Find(&ss)
+	err = r.Error
+	return
+}
+
+func DeleteSnapshotsAfterID(db *gorm.DB, config, id int64) (err error) {
+	return db.Where("id >= ? AND config = ?", id, config).Delete(&Snapshot{}).Error
 }
 
 func CountSnapshots(db *gorm.DB, config, task int64) (count int64, err error) {

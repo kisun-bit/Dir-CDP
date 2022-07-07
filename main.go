@@ -11,7 +11,6 @@ import (
 	"jingrongshuan/rongan-fnotify/router"
 	"log"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"time"
 )

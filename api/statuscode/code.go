@@ -31,6 +31,7 @@ const (
 	DeleteVssSnapFailed  = 0x10020
 	FormatResponseErr    = 0x10021
 	InitDBDriverFailed   = 0x10022
+	QueryConfigFailed    = 0x10023
 )
 
 var MSGFlag = map[int]string{
@@ -64,4 +65,5 @@ var MSGFlag = map[int]string{
 	DeleteVssSnapFailed:  "删除VSS快照失败",
 	FormatResponseErr:    "格式化响应失败",
 	InitDBDriverFailed:   "初始化数据库驱动失败",
+	QueryConfigFailed:    "查询配置失败",
 }

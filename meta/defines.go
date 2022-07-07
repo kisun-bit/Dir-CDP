@@ -114,3 +114,9 @@ const (
 	SnapTypeLVM = "lvm"
 	SnapTypeVSS = "vss"
 )
+
+// 卷影副本类型
+const (
+	DataVolumeRollback = "DataVolumeRollback"
+	ClientAccessible   = "ClientAccessible"
+)

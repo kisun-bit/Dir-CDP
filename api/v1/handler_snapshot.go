@@ -1,15 +1,14 @@
 package v1
 
 import (
-	"encoding/json"
 	"github.com/gin-gonic/gin"
-	"github.com/unknwon/com"
 	"jingrongshuan/rongan-fnotify/api/app"
 	"jingrongshuan/rongan-fnotify/api/statuscode"
 	"jingrongshuan/rongan-fnotify/logic"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/models"
 	"net/http"
+	"strconv"
 )
 
 func CreateSnapshot(c *gin.Context) {
@@ -78,9 +77,12 @@ func DeleteSnapshot(c *gin.Context) {
 // 回滚快照，由studio调用
 func RevertSnapshot(c *gin.Context) {
 	appG := app.Gin{C: c}
-	_ = c.PostForm("type") // vss/lvm
-	snapshotSet := com.StrTo(c.PostForm("version")).MustInt64()
+	type_ := c.PostForm("type") // vss/lvm
+	snapshotSet := c.PostForm("version")
 	Server := c.PostForm("server")
+	restore, _ := strconv.ParseInt(c.PostForm("restore_id"), 10, 64)
+	logger.Fmt.Infof("RevertSnapshot type(%v) version(%v) server(%v) restore_id(%v)",
+		type_, snapshotSet, Server, restore)
 
 	db, err := models.NewDBInstanceByIP(Server)
 	if err != nil {
@@ -88,33 +90,26 @@ func RevertSnapshot(c *gin.Context) {
 		appG.Response(http.StatusBadRequest, statuscode.InitDBDriverFailed, nil)
 		return
 	}
-	s, err := models.QuerySnapshotByID(db, snapshotSet)
+	s, err := models.QuerySnapshotByVersion(db, snapshotSet)
 	if err != nil {
-		logger.Fmt.Warnf("RevertSnapshot QuerySnapshotByID ERR=%v", err)
+		logger.Fmt.Warnf("RevertSnapshot QuerySnapshotByVersion ERR=%v", err)
 		appG.Response(http.StatusBadRequest, statuscode.DetailVssSnapFailed, nil)
 		return
 	}
-
-	var ss []logic.ShadowCopyIns
-	if err := json.Unmarshal([]byte(s.Snap), &ss); err != nil {
-		appG.Response(http.StatusBadRequest, statuscode.FormatResponseErr, nil)
+	config, err := models.QueryConfigByID(db, s.Config)
+	if err != nil {
+		logger.Fmt.Warnf("RevertSnapshot QueryConfigByID ERR=%v", err)
+		appG.Response(http.StatusBadRequest, statuscode.QueryConfigFailed, nil)
 		return
 	}
-	if !meta.IsWin {
-		appG.Response(http.StatusBadRequest, statuscode.SysUnsupportedSnap, nil)
+	revert, err := models.QueryRestoreTaskByID(db, restore)
+	if err != nil {
+		logger.Fmt.Warnf("RevertSnapshot QuerySnapshotByVersion ERR=%v", err)
+		appG.Response(http.StatusBadRequest, statuscode.QUERYRESTOREFAILED, nil)
 		return
 	}
-	for _, snap := range ss {
-		err := logic.RevertVSS(snap.SnapID)
-		if err != nil {
-			logger.Fmt.Errorf("RevertSnapshot RevertVSS ERR=%v", err)
-			appG.Response(http.StatusBadRequest, statuscode.RevertVssSnapFailed, nil)
-			return
-		}
-	}
-	if err = models.DeleteSnapshotsAfterID(db, snapshotSet); err != nil {
-		logger.Fmt.Warnf("RevertSnapshot DeleteSnapshotsAfterID ERR=%v", err)
-	}
+	t := logic.NewTargetMachineRevert(&models.DBProxy{DB: db}, &config, &revert, &s)
+	t.Start()
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
 	return
 }

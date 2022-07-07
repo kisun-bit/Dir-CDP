@@ -1001,7 +1001,7 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 			fallthrough
 		case meta.Win32EventRenameFrom:
 			if !c.confObj.EnableVersion {
-				_ = c.deleteFiles(fwo.Path, fwo.Name, meta.EventCode[fwo.Event])
+				_ = c.deleteFiles(fwo.Path, fwo.Name, meta.EventDesc[fwo.Event.Str()])
 			}
 			continue
 		case meta.Win32EventCreate:
@@ -1206,75 +1206,76 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 	if err != nil {
 		return err
 	}
-
-	/*上传条件说明：
-	情况1：存在同名文件、重载任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
-	      不做处理
-	情况2：存在同名文件、重载任务、同名文件状态为FINISHED，当前文件与同名文件的mtime不相同
-	      处理
-	情况3：存在同名文件、重载任务、同名文件状态为非FINISHED(WATCHED, SYNCING, ERROR)
-	      处理
-	情况4：存在同名文件、普通任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
-	      处理
-	情况5：存在同名文件、普通任务、同名文件状态为FINISHED，当前文件与同名文件的mtime不相同
-	      处理
-	情况6：存在同名文件、普通任务、同名文件状态为WATCHED或SYNCING
-	      不做处理
-	情况7：存在同名文件、普通任务、同名文件状态为ERROR
-	      处理
-	情况8：不存在同名文件
-	      处理
-	*/
-	if fh.ID != 0 && c.isReload && fh.Status == meta.FFStatusFinished && fh.Time == fwo.Time ||
-		fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusFinished && fh.Time == fwo.Time ||
-		fh.ID != 0 && !c.isReload && (fh.Status == meta.FFStatusWatched || fh.Status == meta.FFStatusSyncing) {
-		// do nothing
-		return nil
-	} else if fh.ID != 0 && c.isReload && fh.Status == meta.FFStatusFinished && fh.Time != fwo.Time ||
-		fh.ID != 0 && c.isReload && fh.Status != meta.FFStatusFinished ||
-		fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusFinished && fh.Time != fwo.Time ||
-		fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusError ||
-		fh.ID == 0 {
-		/*如何处理？？？
-		1. 若fh.Create >= c.startTs, 则表示文件对象fh是在本次CDP启动之后才捕捉到的
-		   分支一： ERROR状态 ---> 处理
-		   分支二： 非ERROR状态且fh.timestamp与fwo.timestamp不相同 ---> 处理
-		   分支三： 非ERROR状态且fh.timestamp与fwo.timestamp相同 ---> 不处理
-		2. 若fh.Create < c.startTs, 则表示文件对象fh是在本次CDP启动之前才捕捉到的
-		   分支四： 处理
+	if fh.Path == meta.UnsetStr {
+		/*上传条件说明：
+		情况1：存在同名文件、重载任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
+		      不做处理
+		情况2：存在同名文件、重载任务、同名文件状态为FINISHED，当前文件与同名文件的mtime不相同
+		      处理
+		情况3：存在同名文件、重载任务、同名文件状态为非FINISHED(WATCHED, SYNCING, ERROR)
+		      处理
+		情况4：存在同名文件、普通任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
+		      处理
+		情况5：存在同名文件、普通任务、同名文件状态为FINISHED，当前文件与同名文件的mtime不相同
+		      处理
+		情况6：存在同名文件、普通任务、同名文件状态为WATCHED或SYNCING
+		      不做处理
+		情况7：存在同名文件、普通任务、同名文件状态为ERROR
+		      处理
+		情况8：不存在同名文件
+		      处理
 		*/
-		if fh.ID != 0 && fh.Create >= c.startTs && fh.Status != meta.FFStatusError && fh.Time == fwo.Time {
-			return
+		if fh.ID != 0 && c.isReload && fh.Status == meta.FFStatusFinished && fh.Time == fwo.Time ||
+			fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusFinished && fh.Time == fwo.Time ||
+			fh.ID != 0 && !c.isReload && (fh.Status == meta.FFStatusWatched || fh.Status == meta.FFStatusSyncing) {
+			// do nothing
+			return nil
+		} else if fh.ID != 0 && c.isReload && fh.Status == meta.FFStatusFinished && fh.Time != fwo.Time ||
+			fh.ID != 0 && c.isReload && fh.Status != meta.FFStatusFinished ||
+			fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusFinished && fh.Time != fwo.Time ||
+			fh.ID != 0 && !c.isReload && fh.Status == meta.FFStatusError ||
+			fh.ID == 0 {
+			/*如何处理？？？
+			1. 若fh.Create >= c.startTs, 则表示文件对象fh是在本次CDP启动之后才捕捉到的
+			   分支一： ERROR状态 ---> 处理
+			   分支二： 非ERROR状态且fh.timestamp与fwo.timestamp不相同 ---> 处理
+			   分支三： 非ERROR状态且fh.timestamp与fwo.timestamp相同 ---> 不处理
+			2. 若fh.Create < c.startTs, 则表示文件对象fh是在本次CDP启动之前才捕捉到的
+			   分支四： 处理
+			*/
+			if fh.ID != 0 && fh.Create >= c.startTs && fh.Status != meta.FFStatusError && fh.Time == fwo.Time {
+				return
+			}
+		} else {
+			logger.Fmt.Errorf("%v.uploadDispatcher \nfwo:%v\nfh:%v",
+				c.Str(), pretty.Sprint(fwo), pretty.Sprint(fh))
+			err = errors.New("invalid upload condition")
 		}
-	} else {
-		logger.Fmt.Errorf("%v.uploadDispatcher \nfwo:%v\nfh:%v",
-			c.Str(), pretty.Sprint(fwo), pretty.Sprint(fh))
-		err = errors.New("invalid upload condition")
+
+		/*特殊情况说明：
+		某一个文件更改很频繁，在上一个文件还没有传输完毕的情况下，新的变更又被此服务捕捉到了
+
+		解决办法：
+		每次上传文件，均需要等待历史最近一次的同名文件上传完毕
+		*/
+		if fh.ID != 0 && (fh.Status == meta.FFStatusSyncing || fh.Status == meta.FFStatusWatched) {
+			fi, err_ := os.Stat(fwo.Path)
+			if err_ != nil {
+				return nil
+			}
+			// 说明新的变更事件已经产生，且已存在于c.watcherQueue中，所以忽略本次事件
+			if fi.ModTime().Unix() > fwo.Time {
+				//logger.Fmt.Debugf("忽略过期事件 %v", fwo.Flag)
+				return nil
+			}
+			//logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Flag)
+			if w != nil {
+				w.watcherQueue <- fwo
+			}
+		}
 	}
 
-	/*特殊情况说明：
-	某一个文件更改很频繁，在上一个文件还没有传输完毕的情况下，新的变更又被此服务捕捉到了
-
-	解决办法：
-	每次上传文件，均需要等待历史最近一次的同名文件上传完毕
-	*/
-	if fh.ID != 0 && (fh.Status == meta.FFStatusSyncing || fh.Status == meta.FFStatusWatched) {
-		fi, err_ := os.Stat(fwo.Path)
-		if err_ != nil {
-			return nil
-		}
-		// 说明新的变更事件已经产生，且已存在于c.watcherQueue中，所以忽略本次事件
-		if fi.ModTime().Unix() > fwo.Time {
-			//logger.Fmt.Debugf("忽略过期事件 %v", fwo.Flag)
-			return nil
-		}
-		//logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Flag)
-		if w != nil {
-			w.watcherQueue <- fwo
-		}
-	}
-
-	if !c.isValidPath(fh.Path, fh.Time) {
+	if !c.isValidPath(fwo.Path, fwo.Time) {
 		return nil
 	}
 
@@ -1288,16 +1289,19 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 		logger.Fmt.Errorf("%v.fsNotify notifyOneFileEvent Error=%s", c.Str(), err.Error())
 		return err
 	}
-	if !full {
-		c.ibp.incrQueue <- fm
-	} else {
-		c.fbp.fullQueue <- fm
+	if !c.isStopped() {
+		if !full {
+			c.ibp.incrQueue <- fm
+		} else {
+			c.fbp.fullQueue <- fm
+		}
 	}
 	return
 }
 
 func (c *CDPExecutor) isValidPath(path string, mtime int64) bool {
 	if !c.listFilter.IsValidByGrep(path) {
+		logger.Fmt.Infof("ignore to backup `%v`", path)
 		return false
 	}
 

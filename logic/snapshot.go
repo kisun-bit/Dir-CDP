@@ -11,12 +11,21 @@ import (
 	"jingrongshuan/rongan-fnotify/models"
 	"jingrongshuan/rongan-fnotify/tools"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 )
 
 const VShadow = `C:\rongan\cdp\vshadow.exe`
+const PowerShell = "powershell.exe"
+const DiskShadowScriptsDir = `C:\rongan\cdp\tmp`
+
+func init() {
+	if _, err := os.Stat(DiskShadowScriptsDir); err != nil {
+		_ = os.MkdirAll(DiskShadowScriptsDir, meta.DefaultFileMode)
+	}
+}
 
 //var regexShadowCopyVol = regexp.MustCompile(`.*?\((?P<VOL>\w):\)\\\\\?\\VolLetter{(?P<VID>.*?)}`)
 var RegexOriginalVolume = regexp.MustCompile(`\\\\\?\\Volume{(?P<VID>.*?)}\\.*?\[(?P<VOL>\w+):\\\]`)
@@ -273,23 +282,54 @@ func (s *SnapCreator) deleteInRemote(snap string) (err error) {
 	return nil
 }
 
+func IsSysVol(letter string) bool {
+	letter = strings.ToUpper(letter)
+	return strings.HasPrefix(letter, "C")
+}
+
 func CreateVSS(letter string) (sci ShadowCopyIns, err error) {
+	/*说明
+	现象：
+	1. 系统盘的卷影副本回滚会因为句柄占用导致回滚失败，但是又不能卸载句柄
+	2. win版本vssadmin的回滚功能不可用
+	3. 非持久性卷影副本和ClientAccessible卷影副本不能在本地公开。
+	解决方案：
+	1. Server版本、系统盘 --》创建DataVolumeRollback类型的卷影副本
+	2. Server版本、数据盘 --》创建ClientAccessible类型的卷影副本
+	3. win版本、系统盘、数据盘 --》创建DataVolumeRollback类型的卷影副本
+	*/
+	var args string
+	var r int
+	var o string
+	var type_ string
+
 	if !strings.HasSuffix(letter, ":") {
 		letter += ":"
 	}
-	cs := fmt.Sprintf(`-p -nw %s`, letter)
-	r, o, err := tools.Exec(VShadow, cs)
+
+	if tools.IsWinServer && IsSysVol(letter) {
+		args = fmt.Sprintf(`-p -nw %v`, letter)
+		type_ = meta.DataVolumeRollback
+	} else if tools.IsWinServer && !IsSysVol(letter) {
+		args = fmt.Sprintf(`-scsf -p -nw %v`, letter)
+		type_ = meta.ClientAccessible
+	} else {
+		args = fmt.Sprintf(`-p -nw %v`, letter)
+		type_ = meta.DataVolumeRollback
+	}
+	fmt.Println(args)
+	r, o, err = tools.Process(VShadow, args)
 	if r != 0 {
-		err = fmt.Errorf("failed to create shadow copy(letter=`%s`) out=%v err=%v", letter, o, err)
+		err = fmt.Errorf("failed to create shadow copy(letter=`%s`) args=`%v` out=%v err=%v", letter, args, o, err)
 		return
 	}
 	if err != nil {
 		return sci, err
 	}
+
 	/*创建卷影副本输出
 	VSHADOW.EXE 2.2 - Volume Shadow Copy sample client
 	Copyright (C) 2005 Microsoft Corporation. All rights reserved.
-
 
 	(Option: Persistent shadow copy)
 	(Option: No-writers option detected)
@@ -301,9 +341,7 @@ func CreateVSS(letter string) (sci ShadowCopyIns, err error) {
 	(Waiting for the asynchronous operation to finish...)
 	(Waiting for the asynchronous operation to finish...)
 	Shadow copy set succesfully created.
-
 	List of created shadow copies:
-
 
 	Querying all shadow copies with the SnapshotSetID {39135445-99d7-4923-8035-9b4856138bb1} ...
 
@@ -331,29 +369,40 @@ func CreateVSS(letter string) (sci ShadowCopyIns, err error) {
 			err = fmt.Errorf(`can't find snap id from "%s"`, snap)
 			return
 		}
-		return DetailVSS(snap)
+		sci, err = DetailVSS(snap)
+		if err != nil {
+			return
+		}
+		sci.Type = type_
+		return
 	}
 	err = fmt.Errorf("failed to create shadow copy(letter=`%s`), err=key information was not resolved",
 		letter)
 	return
 }
 
-func RevertVSS(snap string) (err error) {
-	cs := fmt.Sprintf(`-revert=%s`, snap)
-	r, o, err := tools.Exec(VShadow, cs)
-	if r != 0 {
-		err = fmt.Errorf("failed to revert shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
-		return
-	}
-	if err != nil {
-		return err
+type SnapshotMappingTargetDirs struct {
+	SCI          ShadowCopyIns
+	IsSysVol     bool
+	Dirs         []string
+	Mountpoint   string
+	ClientAccess bool
+}
+
+func RevertSnapshotByVssAdmin(snapshot string) (err error) {
+	// vssadmin Revert Shadow /Shadow=<snap_id> /ForceDismount /Quiet
+	r, o, e := tools.Process("vssadmin",
+		fmt.Sprintf("Revert Shadow /Shadow=%s /ForceDismount /Quiet", snapshot))
+	logger.Fmt.Infof("RevertSnapshotByVssAdmin. r(%v) out(%v) err(%v)", r, o, e)
+	if r != 0 || e != nil {
+		return fmt.Errorf("failed to revert shadow %s", snapshot)
 	}
 	return nil
 }
 
 func DeleteVSS(snap string) (err error) {
-	cs := fmt.Sprintf(`-ds=%s`, snap)
-	r, o, err := tools.Exec(VShadow, cs)
+	cs := fmt.Sprintf(` -ds=%s`, snap)
+	r, o, err := tools.Process(VShadow, cs)
 	if r != 0 {
 		err = fmt.Errorf("failed to delete shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
 		return
@@ -362,8 +411,8 @@ func DeleteVSS(snap string) (err error) {
 }
 
 func DetailVSS(snap string) (sci ShadowCopyIns, err error) {
-	cs := fmt.Sprintf(` -s=%s`, snap)
-	r, o, err := tools.Exec(VShadow, cs)
+	cs := fmt.Sprintf(`-s=%s`, snap)
+	r, o, err := tools.Process(VShadow, cs)
 	if r != 0 {
 		err = fmt.Errorf("failed to detail shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
 		return
@@ -374,7 +423,7 @@ func DetailVSS(snap string) (sci ShadowCopyIns, err error) {
 	__splitter := func(__line string) string {
 		return strings.TrimSpace(strings.Split(__line, ":")[1])
 	}
-	/*卷影副本详情输出
+	/* 卷影副本详情输出
 	VSHADOW.EXE 2.2 - Volume Shadow Copy sample client
 	Copyright (C) 2005 Microsoft Corporation. All rights reserved.
 

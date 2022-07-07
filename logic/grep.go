@@ -18,7 +18,7 @@ func NewGrep(include, exclude string) *Grep {
 		g.Include = strings.Split(include, meta.SplitFlag)
 	}
 	if strings.TrimSpace(exclude) != "" {
-		g.Include = strings.Split(exclude, meta.SplitFlag)
+		g.Exclude = strings.Split(exclude, meta.SplitFlag)
 	}
 	return g
 }
@@ -27,19 +27,19 @@ func (g *Grep) IsValidByGrep(path_ string) bool {
 	if len(g.Include) == 0 && len(g.Exclude) == 0 { // 无黑名单，无白名单
 		return true
 	} else if len(g.Include) == 0 && len(g.Exclude) != 0 { // 有黑名单，无白名单
-		return !g.IsExclude(path_)
+		return !g.InExclude(path_)
 	} else if len(g.Include) != 0 && len(g.Exclude) == 0 { // 无黑名单，有白名单
-		return g.IsInclude(path_)
+		return g.InInclude(path_)
 	} else { // 有黑名单，有白名单
-		return g.IsInclude(path_) && !g.IsExclude(path_)
+		return g.InInclude(path_) && !g.InExclude(path_)
 	}
 }
 
-func (g *Grep) IsInclude(path_ string) bool {
+func (g *Grep) InInclude(path_ string) bool {
 	return g._in(path_, g.Include)
 }
 
-func (g *Grep) IsExclude(path_ string) bool {
+func (g *Grep) InExclude(path_ string) bool {
 	return g._in(path_, g.Exclude)
 }
 

@@ -42,7 +42,7 @@ type ConfigModelTarget struct {
 type BackupDirMap struct {
 	LocalOrigin                    string `json:"origin"`    // 本地备份源目录
 	StorageBucket                  string `json:"bucket"`    // 目标桶
-	StoragePrefixForBucketOrRemote string `json:"Target"`    // 目标存储的前缀、目录
+	StoragePrefixForBucketOrRemote string `json:"target"`    // 目标存储的前缀、目录
 	StorageVolume                  string `json:"volume"`    // 目标卷
 	LocalEnableRecursion           bool   `json:"recursion"` // 是否支持递归
 	LocalEnabledDepth              int    `json:"depth"`     // 指定备份深度

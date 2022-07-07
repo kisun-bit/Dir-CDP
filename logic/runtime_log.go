@@ -117,6 +117,14 @@ const (
 	StepDeleteSnapshotErr          = "对驱动器%v删除快照失败，原因：%v"
 	StepRecycleVersion             = "销毁快照，回收副本点%v完成"
 	StepRecycleVersionErr          = "销毁快照，回收副本点%v失败，原因：%v"
+	StepReceiveRevertInstruct      = "接收到版本(%v)回滚指令"
+	StepLoadRevertConfig           = "载入版本(%v)下所有卷快照集"
+	StepMatchDirFromSnapshot       = "处理源目录集与快照集映射关系"
+	StepLoadSnapshot               = "导出快照数据至临时挂载点(%v)"
+	StepRevertShadowCopy           = "正在回滚快照%v至%v:"
+	StepRevertOneDir               = "正在从临时挂载点%v回滚目录%v，处理差异及增量数据"
+	StepFinishRevert               = "完成版本(%v)回滚"
+	StepRevertErr                  = "版本(%v)回滚失败，原因：%v"
 )
 
 type Reporter struct {
