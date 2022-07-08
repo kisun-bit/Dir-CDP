@@ -200,6 +200,10 @@ func LoadCDP(ip string, conf int64, reload bool) (err error) {
 
 	if !cdp.isReload {
 		if err = cdp.initTaskOnce(); err != nil {
+			if err = dp.Sharding(config.ID); err != nil {
+				logger.Fmt.Errorf("LoadCDP sharding err=%v", err)
+				return
+			}
 			return
 		}
 		if err = models.EnableConfig(dp.DB, conf); err != nil {
@@ -1153,7 +1157,7 @@ func (c *CDPExecutor) deleteFilesInRemote(path, name string) (err error) {
 	}
 
 	for _, file := range funk.UniqString(keys) {
-		logger.Fmt.Infof("%v.deleteFilesInRemote delete %v related %v", c.Str(), file, path)
+		//logger.Fmt.Infof("%v.deleteFilesInRemote delete %v related %v", c.Str(), file, path)
 		data := requests.Datas{"b64": file}
 		resp, e := requests.Post(c.storage.deleteSession, data)
 		if e != nil {

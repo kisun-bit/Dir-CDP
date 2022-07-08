@@ -53,7 +53,7 @@ const (
 	DefaultEnumPathChannelSize   = 10                                        // 基于扫描时枚举路径的默认通道缓存
 	DefaultTransferRetryTimes    = 5                                         // 上传/下载文件默认的重试次数
 	DefaultReloadStartDuration   = 5 * time.Second                           // 组件重启后，多久开始拉起失败任务
-	DefaultReportProcessSecs     = 5 * time.Second                           // 每隔多久时间上报一次已备数据量
+	DefaultReportProcessSecs     = 3 * time.Second                           // 每隔多久时间上报一次已备数据量
 	DefaultCloseWalkerInterval   = 5 * time.Second                           // 每隔多久时间检查一次是否需要关闭所有枚举器
 	DefaultWalkerCores           = 4                                         // 路径枚举器的默认并发枚举线程数
 	DefaultTailEventHandleSecs   = 3 * time.Second                           // 尾更新事件最多等待多少时间

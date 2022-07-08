@@ -16,6 +16,7 @@ import (
 	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/meta"
 	version2 "jingrongshuan/rongan-fnotify/tools/os_version/version"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -233,4 +234,22 @@ func MallocDrive() (_ string, err error) {
 		}
 	}
 	return meta.UnsetStr, errors.New("the drive letter was used up")
+}
+
+func IPs() (ips []string) {
+	interfaceAddr, err := net.InterfaceAddrs()
+	if err != nil {
+		return ips
+	}
+
+	for _, address := range interfaceAddr {
+		ipNet, isVailIpNet := address.(*net.IPNet)
+		// 检查ip地址判断是否回环地址
+		if isVailIpNet && !ipNet.IP.IsLoopback() {
+			if ipNet.IP.To4() != nil {
+				ips = append(ips, ipNet.IP.String())
+			}
+		}
+	}
+	return ips
 }

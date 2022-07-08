@@ -1,10 +1,12 @@
 package logic
 
 import (
+	"github.com/thoas/go-funk"
 	"io"
 	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/models"
+	"jingrongshuan/rongan-fnotify/tools"
 	"os"
 	"strings"
 )
@@ -114,6 +116,13 @@ func reloadTaskFromOneServer(ip string) (err error) {
 	}
 
 	for _, c := range cs {
+		// 仅为本机任务才重试
+		if err = c.LoadsJsonFields(dp.DB); err != nil {
+			return
+		}
+		if !funk.InStrings(tools.IPs(), c.OriginHostJson.IP) {
+			continue
+		}
 		if err = LoadCDP(ip, c.ID, true); err != nil {
 			return
 		}

@@ -42,10 +42,6 @@ func NewDBProxyWithInit(ip string) (fvb *DBProxy, err error) {
 		logger.Fmt.Errorf("NewDBProxyWithInit migrate err=%v", err)
 		return
 	}
-	if err = fvb.sharding(); err != nil {
-		logger.Fmt.Errorf("NewDBProxyWithInit sharding err=%v", err)
-		return
-	}
 	return
 }
 
@@ -75,28 +71,21 @@ func (fvb *DBProxy) initSchema() (err error) {
 	return fvb.DB.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", ModelDefaultSchema)).Error
 }
 
-// sharding 实现分表功能，每启用一个监控同步配置，便会新生成一个File表和一个Dir表
-func (fvb *DBProxy) sharding() (err error) {
-	cos, err := fvb.queryConfigObjects()
-	if err != nil {
-		logger.Fmt.Errorf("DBProxy.sharding queryConfigObjects err=%v", err)
+// Sharding 实现分表功能，每启用一个监控同步配置，便会新生成一个File表和一个Dir表
+func (fvb *DBProxy) Sharding(config int64) (err error) {
+	if err = fvb.RegisterEventFileModel(config); err != nil {
 		return
 	}
-	for _, c := range cos {
-		if err = fvb.RegisterEventFileModel(c.ID); err != nil {
-			return
-		}
-		if err = fvb.RegisterEventDirModel(c.ID); err != nil {
-			return
-		}
+	if err = fvb.RegisterEventDirModel(config); err != nil {
+		return
 	}
-	//middleware := sharding.Register(sharding.Config{
+	//middleware := Sharding.Register(Sharding.Config{
 	//	ShardingKey:         "conf_id",
 	//	NumberOfShards:      2147483647,
-	//	PrimaryKeyGenerator: sharding.PKSnowflake,
+	//	PrimaryKeyGenerator: Sharding.PKSnowflake,
 	//}, "event_file")
 	//if err = fvb.DB.Use(middleware); err != nil {
-	//	logger.Fmt.Errorf("DBProxy.sharding use sharding-middleware err=%v", err)
+	//	logger.Fmt.Errorf("DBProxy.Sharding use Sharding-middleware err=%v", err)
 	//	return
 	//}
 	return
