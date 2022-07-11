@@ -35,6 +35,7 @@ require (
 	github.com/thoas/go-funk v0.9.2
 	github.com/ugorji/go v1.2.7 // indirect
 	github.com/unknwon/com v1.0.1
+	github.com/unrolled/secure v1.11.0
 	github.com/urfave/cli/v2 v2.6.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	golang.org/x/crypto v0.0.0-20220511200225-c6db032c6c88 // indirect

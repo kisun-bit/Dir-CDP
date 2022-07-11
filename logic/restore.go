@@ -347,6 +347,9 @@ func (r *RestoreTask) _downloadWithRetry(ffm models.EventFileModel, retry int, s
 			err = r._downloadFromHost(ffm, restorePath, url)
 		}
 		if err == nil {
+			if err := r.progress.UploadTaskProcess(); err != nil {
+				logger.Error("Progress.Gather update err. stop processing info")
+			}
 			_ = os.Chtimes(restorePath, time.Now(), time.Unix(ffm.Time, 0))
 		}
 	}
@@ -362,11 +365,14 @@ func (r *RestoreTask) _downloadFromS3(
 	}
 	defer target.Close()
 
-	_, err = downloader.Download(target,
+	var n int64
+	n, err = downloader.Download(target,
 		&s3.GetObjectInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(ffm.Storage),
 		})
+	r.progress.AddNum(1)
+	r.progress.AddSize(n)
 	return err
 }
 
@@ -404,11 +410,14 @@ func (r *RestoreTask) _downloadFromHost(
 	}
 	defer resp.Body.Close()
 
-	_, err = io.Copy(target, resp.Body)
+	var n int64
+	n, err = io.Copy(target, resp.Body)
 	if err != nil {
 		logger.Fmt.Warnf("%v io.Copy err=%v", r.Str(), err)
 		return
 	}
+	r.progress.AddNum(1)
+	r.progress.AddSize(n)
 	return nil
 }
 

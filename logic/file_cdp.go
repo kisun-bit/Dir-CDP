@@ -507,6 +507,8 @@ func (c *CDPExecutor) logicWhenReload() (err error) {
 }
 
 func (c *CDPExecutor) logicWhenNormal() (err error) {
+	_ = c.deleteWhenDisableVersion()
+	_ = c.reporter.ReportInfo(StepStartFullAndIncrWhenReload)
 	if c.taskObj.Status == meta.CDPUNSTART || c.taskObj.Status == meta.CDPCOPYING {
 		_ = c.reporter.ReportInfo(StepStartFullAndIncrWhenNor)
 		if c.taskObj.Status == meta.CDPUNSTART {
@@ -533,9 +535,11 @@ func (c *CDPExecutor) logicWhenNormal() (err error) {
 
 	if c.taskObj.Status == meta.CDPCDPING && !models.IsEmptyTable(c.DBDriver.DB, c.confObj.ID) {
 		logger.Fmt.Infof("%v.logicWhenNormal in [CDPING] and not empty table --> INCR", c.Str())
-		close(c.fbp.fullQueue)
-		_ = c.reporter.ReportInfo(StepCloseFullQueue)
-		_ = c.reporter.ReportInfo(StepStartIncrWhenNor)
+		//close(c.fbp.fullQueue)
+		//_ = c.reporter.ReportInfo(StepCloseFullQueue)
+		//_ = c.reporter.ReportInfo(StepStartIncrWhenNor)
+		// 禁用后重新启用也会去分析中断期间的文件
+		c.full()
 		c.incr()
 		return nil
 	}
@@ -774,6 +778,9 @@ func (c *CDPExecutor) uploadWithRetry(ffm models.EventFileModel, retry int) (err
 			err = fmt.Errorf("unsupported confObj-target(%v)", c.confObj.Target)
 		}
 		if err == nil {
+			if err := c.progress.UploadTaskProcess(); err != nil {
+				logger.Error("Progress.Gather update err. stop processing info")
+			}
 			if c.confObj.ExtInfoJson.LocalDeleteAfterBackup {
 				_ = os.Remove(ffm.Path)
 			}
@@ -1210,7 +1217,7 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 	if err != nil {
 		return err
 	}
-	if fh.Path == meta.UnsetStr {
+	if fh.Path != meta.UnsetStr {
 		/*上传条件说明：
 		情况1：存在同名文件、重载任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
 		      不做处理

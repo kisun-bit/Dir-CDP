@@ -81,10 +81,6 @@ func (p *Progress) Gather() {
 		if p.stop {
 			break
 		}
-		if err := p.UploadTaskProcess(); err != nil {
-			logger.Error("Progress.Gather update err. stop processing info")
-			break
-		}
 		time.Sleep(p.Interval)
 	}
 }

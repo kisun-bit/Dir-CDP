@@ -54,7 +54,7 @@ var EventDesc = map[string]string{
 	"NT_UPDATE":   "更新",
 	"NT_RF":       "重命名",
 	"NT_RT":       "重命名",
-	"NT_SCANNING": "扫描",
+	"NT_SCANNING": "检测",
 }
 
 // 监控同步配置的目标类型

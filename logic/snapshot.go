@@ -317,7 +317,6 @@ func CreateVSS(letter string) (sci ShadowCopyIns, err error) {
 		args = fmt.Sprintf(`-p -nw %v`, letter)
 		type_ = meta.DataVolumeRollback
 	}
-	fmt.Println(args)
 	r, o, err = tools.Process(VShadow, args)
 	if r != 0 {
 		err = fmt.Errorf("failed to create shadow copy(letter=`%s`) args=`%v` out=%v err=%v", letter, args, o, err)
