@@ -36,6 +36,13 @@ func (p *program) run() {
 		logic.ReloadCDPTask()
 	}()
 
+	if err = logic.CreateShareLocalUser(); err != nil {
+		logging.Logger.Fmt.Warnf("create share user ERR=%v", err)
+		log.Fatalf("create share user ERR=%v", err)
+	} else {
+		logging.Logger.Fmt.Infof("init user %v", meta.WinShareUser)
+	}
+
 	gin.DisableConsoleColor()
 	gin.SetMode(meta.ConfigSettings.Mode)
 	routersInit := router.InitRouter()
@@ -47,7 +54,7 @@ func (p *program) run() {
 		WriteTimeout:   meta.DefaultAppWriteTimeout,
 		MaxHeaderBytes: 1 << 20,
 	}
-	if err = p.Srv.ListenAndServe(); err != nil {
+	if err = p.Srv.ListenAndServeTLS(meta.SSLCrt, meta.SSLKey); err != nil {
 		log.Fatalf("fsnotify service serve ERR=%v", err)
 	}
 	return
@@ -106,7 +113,6 @@ func main() {
 		}
 		return
 	}
-
 	if err = s.Run(); err != nil {
 		log.Fatal(err)
 	}

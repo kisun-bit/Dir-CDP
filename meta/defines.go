@@ -120,3 +120,11 @@ const (
 	DataVolumeRollback = "DataVolumeRollback"
 	ClientAccessible   = "ClientAccessible"
 )
+
+// 基于快照做恢复的三种恢复模式
+const (
+	RevertSnap2TargetNewDrive = "revert_2_target_new_drive"
+	RevertSnap2TargetOldDrive = "revert_2_target_old_drive"
+	RevertSnap2OriginOldDrive = "revert_2_origin_old_drive"
+	RevertSnap2OriginNewDrive = "revert_2_origin_new_drive"
+)

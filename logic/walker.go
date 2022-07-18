@@ -116,6 +116,11 @@ func (w *Walker) walkDir(dir string) {
 	}()
 	defer w.wg.Done()
 
+	if dir == filepath.Dir(meta.ConfigSettings.WorkDir) {
+		logger.Fmt.Infof("ignore to walk `%v`", dir)
+		return
+	}
+
 	depth := w.relativeDepth(dir)
 	if !w.isDepthValid(depth) {
 		return

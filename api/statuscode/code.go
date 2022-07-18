@@ -32,6 +32,12 @@ const (
 	FormatResponseErr    = 0x10021
 	InitDBDriverFailed   = 0x10022
 	QueryConfigFailed    = 0x10023
+	InvalidRevertType    = 0x10024
+	CorrectDirFailed     = 0x10025
+	MallocDriveERR       = 0x10026
+	SMBConnectERR        = 0x10027
+	SMBDisConnectERR     = 0x10028
+	SMBDelShareERR       = 0x10029
 )
 
 var MSGFlag = map[int]string{
@@ -66,4 +72,10 @@ var MSGFlag = map[int]string{
 	FormatResponseErr:    "格式化响应失败",
 	InitDBDriverFailed:   "初始化数据库驱动失败",
 	QueryConfigFailed:    "查询配置失败",
+	InvalidRevertType:    "不支持的恢复类型",
+	CorrectDirFailed:     "创建目录或更改目录权限失败",
+	MallocDriveERR:       "分配驱动器号失败",
+	SMBConnectERR:        "连接共享文件夹失败",
+	SMBDisConnectERR:     "断开共享文件夹连接失败",
+	SMBDelShareERR:       "删除共享文件夹失败",
 }

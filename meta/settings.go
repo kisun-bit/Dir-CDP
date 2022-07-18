@@ -1,7 +1,9 @@
 package meta
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -20,7 +22,7 @@ type AppSettings struct {
 }
 
 func init() {
-	// 加载配置信息
+	// loading
 	cfgDir, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
 		panic("获取执行路径失败，服务启动失败")
@@ -38,17 +40,36 @@ func init() {
 	if err != nil {
 		panic("加载配置失败，服务启动失败")
 	}
+
+	// APP config
 	AppIsDebugMode = ConfigSettings.Mode == "debug"
 	ServerIPs = filepath.Join(ConfigSettings.WorkDir, `server.ips`)
 	HandlerBaseDir = filepath.Join(ConfigSettings.WorkDir, `handles`)
-	SSLCrt = filepath.Join(ConfigSettings.WorkDir, `config`, `cdp.crt`)
-	SSLKey = filepath.Join(ConfigSettings.WorkDir, `config`, `cdp.key`)
+
+	// SSL
+	SSLCrt = filepath.Join(ConfigSettings.WorkDir, `cdp.crt`)
+	SSLKey = filepath.Join(ConfigSettings.WorkDir, `cdp.key`)
+	CRT, err := ioutil.ReadFile(SSLCrt)
+	if err != nil {
+		fmt.Println(err)
+		panic("加载SSL证书失败")
+	}
+	Pool.AppendCertsFromPEM(CRT)
+
+	// mountpoint
+	if IsWin {
+		MountPoints = filepath.Join(ConfigSettings.WorkDir, "exposes")
+		_ = os.MkdirAll(MountPoints, DefaultFileMode)
+	}
 }
 
 const (
 	DefaultAppReadTimeout  = 60 * time.Second
 	DefaultAppWriteTimeout = 60 * time.Second
 	DatabaseDriverTemplate = "host=%s user=postgres password=postgres dbname=studio port=5432 sslmode=disable TimeZone=Asia/Shanghai" // 数据库配置
+
+	WinShareUser = "RunstorShare"
+	WinSharePwd  = "qX4kUeFc"
 
 	DefaultDRQueueSize           = 100                                       // 文件备份/恢复通道的默认缓冲区大小
 	DefaultRetryTimeInterval     = 5 * time.Second                           // 重试间隔时间
@@ -74,5 +95,7 @@ var (
 	HandlerBaseDir string                      // 备份过程的锁文件目录
 	SSLCrt         string
 	SSLKey         string
+	MountPoints    string
 	AppIsDebugMode = false
+	Pool           = x509.NewCertPool()
 )

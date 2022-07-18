@@ -50,7 +50,7 @@ type EventFileModel struct {
 	nt_notify.FileInfo
 	ID      int64
 	Type    int    // 文件类型，1表示文件，2表示目录，4表示链接，8表示其他
-	Mode    int    // 文件权限，uint32类型
+	Mode    int64  // 文件权限，uint32类型
 	Create  int64  // 创建时间戳，Win32捕捉变更事件的时间
 	Event   string // 变更事件类型
 	ConfID  int64  `json:"conf_id"` // 配置ID，表明此记录是基于哪一个配置所捕捉的

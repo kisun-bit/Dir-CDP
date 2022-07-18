@@ -22,16 +22,15 @@ import (
 	"github.com/panjf2000/ants/v2"
 	"github.com/thoas/go-funk"
 	"io"
-	"io/ioutil"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/models"
 	"jingrongshuan/rongan-fnotify/nt_notify"
 	"jingrongshuan/rongan-fnotify/tools"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,6 +90,7 @@ func initIncrBackupProxy(poolSize, incrQueueSize int) *incrBackupProxy {
 type storage struct {
 	// 以下属性仅在目标存储为主机时有效
 	uploadSession string
+	dirSession    string
 	deleteSession string
 	renameSession string
 	// 一下属性仅在目标存储为对象存储时有效
@@ -554,11 +554,13 @@ func (c *CDPExecutor) moreInit() (err error) {
 
 	if c.is2host() {
 		c.storage.uploadSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/upload", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
+			"https://%s:%v/api/v1/upload", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
+		c.storage.dirSession = fmt.Sprintf(
+			"https://%s:%v/api/v1/create_or_update_dir", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		c.storage.deleteSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/delete", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
+			"https://%s:%v/api/v1/delete", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		c.storage.renameSession = fmt.Sprintf(
-			"http://%s:%v/api/v1/rename", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
+			"https://%s:%v/api/v1/rename", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.uploadSession)
 
 	} else if c.is2s3() {
@@ -656,7 +658,7 @@ func (c *CDPExecutor) uploadDispatcher(full bool) {
 			return
 		}
 		if meta.AppIsDebugMode {
-			logger.Fmt.Debugf("%v | 上传文件`%v`", c.Str(), fwo.Path)
+			logger.Fmt.Debugf("%v | (权限:%v)上传文件`%v`", c.Str(), os.FileMode(fwo.Mode).String(), fwo.Path)
 		}
 		wg.Add(1)
 		if err = c.uploadOneFile(pool, fwo, wg); err != nil {
@@ -698,35 +700,25 @@ func (c *CDPExecutor) waitUntilNoSyncingFile() {
 
 func (c *CDPExecutor) uploadOneFile(pool *ants.Pool, fwo models.EventFileModel, wg *sync.WaitGroup) (_ error) {
 	return pool.Submit(func() {
-		var err_ error
-		defer func() {
-			if err_ == nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportDebugWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileScanUpS, meta.EventDesc[fwo.Event], fwo.Path)
-			} else if err_ == nil && fwo.Event != meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportDebugWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileEventUpS, meta.EventDesc[fwo.Event], fwo.Path)
-			} else if err_ != nil && fwo.Event == meta.Win32EventFullScan.Str() {
-				_ = c.reporter.ReportWarnWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileScanUpF, meta.EventDesc[fwo.Event], fwo.Path, err_)
-			} else {
-				_ = c.reporter.ReportWarnWithoutLogWithKey(
-					meta.RuntimeIOBackup, StepFileEventUpF, meta.EventDesc[fwo.Event], fwo.Path, err_)
-			}
-		}()
-
 		defer wg.Done()
-		err_ = c.upload2DiffStorage(fwo)
-		if err_ == nil {
+		err_ := c.upload2DiffStorage(fwo)
+		// 连接不上备份服务器或SQL错误（不对文件类型错误做处理）
+		if err_ != nil && strings.Contains(err_.Error(), "SQLSTATE") {
+			c.catchErr(err_)
 			return
 		}
-
-		// 连接不上备份服务器或SQL错误（不对文件类型错误做处理）
-		if strings.Contains(err_.Error(), "SQLSTATE") {
-			logger.Fmt.Warnf("%v.uploadOneFile ERR=%v", c.Str(), err_)
-			return
+		if err_ == nil && fwo.Event == meta.Win32EventFullScan.Str() {
+			_ = c.reporter.ReportDebugWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileScanUpS, meta.EventDesc[fwo.Event], fwo.Path)
+		} else if err_ == nil && fwo.Event != meta.Win32EventFullScan.Str() {
+			_ = c.reporter.ReportDebugWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileEventUpS, meta.EventDesc[fwo.Event], fwo.Path)
+		} else if err_ != nil && fwo.Event == meta.Win32EventFullScan.Str() {
+			_ = c.reporter.ReportWarnWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileScanUpF, meta.EventDesc[fwo.Event], fwo.Path, err_)
 		} else {
-			err_ = nil
+			_ = c.reporter.ReportWarnWithoutLogWithKey(
+				meta.RuntimeIOBackup, StepFileEventUpF, meta.EventDesc[fwo.Event], fwo.Path, err_)
 		}
 	})
 }
@@ -791,53 +783,14 @@ func (c *CDPExecutor) uploadWithRetry(ffm models.EventFileModel, retry int) (err
 	return err
 }
 
-func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp io.Reader) (err error) {
-	r, w := io.Pipe()
-	writer := multipart.NewWriter(w)
-	defer r.Close()
-
-	// FIX: 优化大文件传输时内存占用过大的问题
-	go func() {
-		defer w.Close()
-		defer writer.Close()
-
-		var part io.Writer
-		part, err = writer.CreateFormFile("filename", ffm.Storage)
-		if err != nil {
-			logger.Fmt.Warnf("%v.upload2host writer.CreateFormFile ERR=%v", c.Str(), err)
-			return
-		}
-		if _, err = io.Copy(part, fp); err != nil {
-			logger.Fmt.Warnf("%v.upload2host io.Copy ERR=%v", c.Str(), err)
-			return
-		}
-	}()
-
-	req, err := http.NewRequest(http.MethodPost, c.storage.uploadSession, r)
+func (c *CDPExecutor) upload2host(ffm models.EventFileModel, fp *os.File) (err error) {
+	err = UploadFile2Host(c.storage.uploadSession, fp, ffm.Storage, os.FileMode(ffm.Mode))
 	if err != nil {
-		logger.Fmt.Warnf("%v.upload2host http.NewRequest ERR=%v", c.Str(), err)
-		return err
+		logger.Fmt.Warnf("%v.upload2host ffm=(`%v`)", c.Str(), pretty.Sprint(ffm))
 	}
-	req.Header.Add("Content-Type", writer.FormDataContentType())
-	client := new(http.Client)
-	req.Close = true
-	resp, err := client.Do(req)
-	if err != nil {
-		if strings.Contains(err.Error(), "EOF") {
-			logger.Fmt.Warnf("%v.upload2host upload `%v` POST EOF", c.Str(), ffm.Path)
-			return nil
-		}
-		logger.Fmt.Errorf("%v.upload2host client.Do ERR=%v", c.Str(), err)
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		c.progress.AddNum(1)
-		c.progress.AddSize(ffm.Size)
-		return nil
-	}
-	bb, _ := ioutil.ReadAll(resp.Body)
-	return fmt.Errorf("invalid status(%v) reason(%v)", resp.StatusCode, string(bb))
+	c.progress.AddNum(1)
+	c.progress.AddSize(ffm.Size)
+	return nil
 }
 
 func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err error) {
@@ -853,14 +806,14 @@ func (c *CDPExecutor) upload2s3(ffm models.EventFileModel, fp io.Reader) (err er
 		return err
 	}
 	_, err = uploader.Upload(&s3manager.UploadInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(ffm.Storage),
-		Body:   fp,
+		Bucket:   aws.String(bucket),
+		Key:      aws.String(ffm.Storage),
+		Body:     fp,
+		Metadata: map[string]*string{"mode": aws.String(strconv.FormatInt(ffm.Mode, 10))},
 	})
 	if err != nil {
 		logger.Fmt.Warnf("%v.upload2s3 Unable to upload file %s | %v", c.Str(), ffm.Path, err)
 	}
-
 	c.progress.AddNum(1)
 	c.progress.AddSize(ffm.Size)
 	return
@@ -930,7 +883,7 @@ func (c *CDPExecutor) scanNotify() {
 
 	for fwo := range c.fbp.walkerQueue {
 		if fwo.Type == meta.FTDir {
-			if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, fwo.Path, ""); err != nil {
+			if err = c.createDir(fwo.Path); err != nil {
 				return
 			}
 			continue
@@ -947,6 +900,44 @@ func (c *CDPExecutor) scanNotify() {
 	if c.isStopped() {
 		return
 	}
+}
+
+func (c *CDPExecutor) createDir(dir string) (err error) {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, dir, "", fi.Mode()); err != nil {
+		return
+	}
+	edm, err := models.QueryDir(c.DBDriver.DB, c.confObj.ID, dir)
+	if err != nil || edm.ID == 0 {
+		return c.createDirRemote(dir, int64(fi.Mode()))
+	}
+	if edm.Mode != int64(fi.Mode()) {
+		if err = c.createDirRemote(dir, int64(fi.Mode())); err != nil {
+			return
+		}
+		return models.UpdateDirMode(c.DBDriver.DB, c.confObj.ID, edm.ID, int64(fi.Mode()))
+	}
+	return nil
+}
+
+func (c *CDPExecutor) createDirRemote(dir string, mode int64) (err error) {
+	o, _, _, t, err := c.confObj.SpecifyTarget(dir)
+	if err != nil {
+		return err
+	}
+	td := tools.GenerateRemoteHostKey(o, dir, t, tools.IsWin(c.confObj.TargetHostJson.OS))
+	form := map[string]string{
+		"path": td,
+		"mode": strconv.FormatInt(mode, 10),
+	}
+	if meta.AppIsDebugMode {
+		logger.Fmt.Debugf("%v | (权限:%v)创建目录`%v`", c.Str(), os.FileMode(mode).String(), td)
+	}
+	_, err = RequestUrl(http.MethodPost, c.storage.dirSession, form)
+	return
 }
 
 // 由于连续变更的文件集，将其压入incrQueue时，必须是有新的不同的变更记录来驱动last其压入incrQueue
@@ -1276,10 +1267,10 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 			}
 			// 说明新的变更事件已经产生，且已存在于c.watcherQueue中，所以忽略本次事件
 			if fi.ModTime().Unix() > fwo.Time {
-				//logger.Fmt.Debugf("忽略过期事件 %v", fwo.Flag)
+				// 忽略过期事件
 				return nil
 			}
-			//logger.Fmt.Debugf("回溯到原监控队列 %v", fwo.Flag)
+			// 回溯到原监控队列
 			if w != nil {
 				w.watcherQueue <- fwo
 			}
@@ -1291,8 +1282,8 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 	}
 
 	// 记录事件至DB和Queue
-	if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, filepath.Dir(fwo.Path), ""); err != nil {
-		logger.Fmt.Errorf("%v.fsNotify CreateDirIfNotExists Error=%s", c.Str(), err.Error())
+	if err = c.createDir(filepath.Dir(fwo.Path)); err != nil {
+		logger.Fmt.Errorf("%v.fsNotify createDir Error=%s", c.Str(), err.Error())
 		return
 	}
 	fm, err := c.notifyOneFileEvent(fwo)
@@ -1383,7 +1374,7 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 	ff.Create = time.Now().Unix()
 	ff.ConfID = c.confObj.ID
 	ff.Time = e.Time
-	ff.Mode = int(e.Mode)
+	ff.Mode = int64(e.Mode)
 	ff.Size = e.Size
 	ff.Path, _ = filepath.Abs(e.Path)
 	ff.Name = filepath.Base(e.Path)

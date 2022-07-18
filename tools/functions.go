@@ -18,6 +18,7 @@ import (
 	version2 "jingrongshuan/rongan-fnotify/tools/os_version/version"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -222,18 +223,18 @@ var DriveLetters = []string{
 	"O:", "P:", "Q:", "R:", "S:", "T:", "U:",
 	"V:", "W:", "X:", "Y:", "Z:"}
 
-func MallocDrive() (_ string, err error) {
+func FreeDriveLetters() (letters []string, err error) {
 	// 使用mountvol命令查询所有的挂载点
 	_, o, _ := Process("mountvol", "")
 	if strings.TrimSpace(o) == meta.UnsetStr {
-		return meta.UnsetStr, errors.New("failed to exec `mountvol`")
+		return letters, errors.New("failed to exec `mountvol`")
 	}
 	for i := range DriveLetters {
 		if !strings.Contains(o, DriveLetters[len(DriveLetters)-i-1]) {
-			return DriveLetters[len(DriveLetters)-i-1], nil
+			letters = append(letters, DriveLetters[len(DriveLetters)-i-1])
 		}
 	}
-	return meta.UnsetStr, errors.New("the drive letter was used up")
+	return letters, nil
 }
 
 func IPs() (ips []string) {
@@ -252,4 +253,29 @@ func IPs() (ips []string) {
 		}
 	}
 	return ips
+}
+
+type PowerShell struct {
+	powerShell string
+}
+
+func NewPS() *PowerShell {
+	ps, _ := exec.LookPath("powershell.exe")
+	return &PowerShell{
+		powerShell: ps,
+	}
+}
+
+func (p *PowerShell) Execute(args ...string) (stdOut string, stdErr string, err error) {
+	args = append([]string{"-NoProfile", "-NonInteractive"}, args...)
+	cmd := exec.Command(p.powerShell, args...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	stdOut, stdErr = stdout.String(), stderr.String()
+	return
 }

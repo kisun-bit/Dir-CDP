@@ -5,6 +5,7 @@ import (
 	"gorm.io/gorm"
 	"jingrongshuan/rongan-fnotify/meta"
 	"jingrongshuan/rongan-fnotify/tools"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -14,6 +15,7 @@ type EventDirModel struct {
 	Path    string
 	Name    string
 	Parent  string
+	Mode    int64
 	ExtInfo string
 }
 
@@ -31,6 +33,7 @@ CREATE TABLE IF NOT EXISTS "fsnotify"."event_dir" (
 	"path" TEXT COLLATE "pg_catalog"."default",
 	"name" TEXT COLLATE "pg_catalog"."default",
 	"parent" TEXT COLLATE "pg_catalog"."default",
+    "mode" int8,
 	"ext_info" TEXT COLLATE "pg_catalog"."default",
 	CONSTRAINT "event_dir_pkey" PRIMARY KEY ( "id" ) 
 );
@@ -65,17 +68,32 @@ func _eventDirTable(conf int64) string {
 	return fmt.Sprintf(`"fsnotify"."event_dir_%v"`, conf)
 }
 
-func CreateDirIfNotExists(db *gorm.DB, conf int64, path, ext string) (err error) {
-	sqlTmp := `insert into %v ("path","name","parent","ext_info") 
-    values ('%v', '%v', '%v', '%v') 
+func CreateDirIfNotExists(db *gorm.DB, conf int64, path, ext string, mode os.FileMode) (err error) {
+	sqlTmp := `insert into %v ("path","name","parent","mode","ext_info") 
+    values ('%v', '%v', '%v', %v, '%v') 
     ON CONFLICT (path) DO NOTHING`
 	sql := fmt.Sprintf(sqlTmp,
 		_eventDirTable(conf),
 		strings.ReplaceAll(tools.CorrectDirWithPlatform(path, meta.IsWin), `'`, `''`),
 		strings.ReplaceAll(filepath.Base(path), `'`, `''`),
 		strings.ReplaceAll(tools.CorrectDirWithPlatform(filepath.Dir(path), meta.IsWin), `'`, `''`),
+		int64(mode),
 		strings.ReplaceAll(ext, `'`, `''`))
 	return db.Exec(sql).Error
+}
+
+func QueryDir(db *gorm.DB, conf int64, dir string) (edm EventDirModel, err error) {
+	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path='%v' ORDER BY id DESC LIMIT 1`,
+		_eventDirTable(conf),
+		strings.ReplaceAll(tools.CorrectDirWithPlatform(dir, meta.IsWin), `'`, `''`))
+	err = db.Raw(sql_).Scan(&edm).Error
+	return edm, err
+}
+
+func UpdateDirMode(db *gorm.DB, conf, id, mode int64) (err error) {
+	sql_ := fmt.Sprintf(`UPDATE %v SET mode=%v WHERE id=%v`,
+		_eventDirTable(conf), mode, id)
+	return db.Raw(sql_).Error
 }
 
 //func QueryDirByPath(db *gorm.DB, conf int64, path string) (d EventDirModel, err error) {

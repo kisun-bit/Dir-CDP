@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 func Upload(c *gin.Context) {
@@ -18,6 +19,12 @@ func Upload(c *gin.Context) {
 	if err != nil {
 		logger.Fmt.Warnf("Upload file=%v ERR=%v", file, err)
 		appG.Response(http.StatusBadRequest, statuscode.LACKFILENAME, nil)
+		return
+	}
+	mode, err := strconv.ParseInt(c.PostForm("mode"), 10, 64)
+	if err != nil {
+		logger.Fmt.Warnf("Upload parse mode err=%v", err)
+		appG.Response(http.StatusBadRequest, statuscode.ERROR, nil)
 		return
 	}
 	dir := filepath.Dir(file.Filename)
@@ -31,7 +38,7 @@ func Upload(c *gin.Context) {
 		appG.Response(http.StatusBadRequest, statuscode.SYNCFILEFAILED, nil)
 		return
 	}
-
+	_ = os.Chmod(file.Filename, os.FileMode(mode))
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
 	return
 }
@@ -98,6 +105,36 @@ func Rename(c *gin.Context) {
 	if err := os.Rename(old, new_); err != nil {
 		appG.Response(http.StatusBadRequest, statuscode.RENAMEERROR, nil)
 		return
+	}
+	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
+	return
+}
+
+func CreateOrUpdateDir(c *gin.Context) {
+	appG := app.Gin{C: c}
+
+	path := c.PostForm("path")
+	mode, e := strconv.ParseInt(c.PostForm("mode"), 10, 64)
+	if e != nil {
+		logger.Fmt.Warnf("CreateOrUpdateDir ParseInt ERR=%v", e)
+		appG.Response(http.StatusBadRequest, statuscode.CorrectDirFailed, nil)
+		return
+	}
+	fi, e := os.Stat(path)
+	if e != nil {
+		if err := os.MkdirAll(path, os.FileMode(mode)); err != nil {
+			logger.Fmt.Warnf("CreateOrUpdateDir MkdirAll ERR=%v", err)
+			appG.Response(http.StatusBadRequest, statuscode.CorrectDirFailed, nil)
+			return
+		}
+	} else {
+		if int64(fi.Mode()) != mode {
+			if err := os.Chmod(path, os.FileMode(mode)); err != nil {
+				logger.Fmt.Warnf("CreateOrUpdateDir Chmod ERR=%v", err)
+				appG.Response(http.StatusBadRequest, statuscode.CorrectDirFailed, nil)
+				return
+			}
+		}
 	}
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
 	return

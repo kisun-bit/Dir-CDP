@@ -2,6 +2,7 @@ package v1
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/thoas/go-funk"
 	"jingrongshuan/rongan-fnotify/api/app"
 	"jingrongshuan/rongan-fnotify/api/statuscode"
 	"jingrongshuan/rongan-fnotify/logic"
@@ -66,7 +67,7 @@ func DeleteSnapshot(c *gin.Context) {
 	}
 	err := logic.DeleteVSS(snap)
 	if err != nil {
-		logger.Fmt.Errorf("DeleteSnapshot DeleteVSS ERR=%v", err)
+		logger.Fmt.Warnf("DeleteSnapshot DeleteVSS ERR=%v", err)
 		appG.Response(http.StatusBadRequest, statuscode.DeleteVssSnapFailed, nil)
 		return
 	}
@@ -77,20 +78,33 @@ func DeleteSnapshot(c *gin.Context) {
 // 回滚快照，由studio调用
 func RevertSnapshot(c *gin.Context) {
 	appG := app.Gin{C: c}
-	type_ := c.PostForm("type") // vss/lvm
-	snapshotSet := c.PostForm("version")
-	Server := c.PostForm("server")
-	restore, _ := strconv.ParseInt(c.PostForm("restore_id"), 10, 64)
-	logger.Fmt.Infof("RevertSnapshot type(%v) version(%v) server(%v) restore_id(%v)",
-		type_, snapshotSet, Server, restore)
+	vtype := c.PostForm("type") // vss/lvm
+	version := c.PostForm("version")
+	server := c.PostForm("server")
+	task, _ := strconv.ParseInt(c.PostForm("restore_id"), 10, 64)
+	node, _ := strconv.ParseInt(c.PostForm("restore_node"), 10, 64)
 
-	db, err := models.NewDBInstanceByIP(Server)
+	restoreMethod := c.PostForm("restore_method")
+	logger.Fmt.Infof("RevertSnapshot type(%v) version(%v) server(%v) restore_id(%v) type(%v)",
+		vtype, version, server, task, restoreMethod)
+
+	if !funk.InStrings(
+		[]string{
+			meta.RevertSnap2TargetNewDrive,
+			meta.RevertSnap2TargetOldDrive,
+			meta.RevertSnap2OriginOldDrive,
+			meta.RevertSnap2OriginNewDrive,
+		}, restoreMethod) {
+		appG.Response(http.StatusBadRequest, statuscode.InvalidRevertType, nil)
+		return
+	}
+	db, err := models.NewDBInstanceByIP(server)
 	if err != nil {
 		logger.Fmt.Warnf("RevertSnapshot NewDBInstanceByIP ERR=%v", err)
 		appG.Response(http.StatusBadRequest, statuscode.InitDBDriverFailed, nil)
 		return
 	}
-	s, err := models.QuerySnapshotByVersion(db, snapshotSet)
+	s, err := models.QuerySnapshotByVersion(db, version)
 	if err != nil {
 		logger.Fmt.Warnf("RevertSnapshot QuerySnapshotByVersion ERR=%v", err)
 		appG.Response(http.StatusBadRequest, statuscode.DetailVssSnapFailed, nil)
@@ -102,13 +116,13 @@ func RevertSnapshot(c *gin.Context) {
 		appG.Response(http.StatusBadRequest, statuscode.QueryConfigFailed, nil)
 		return
 	}
-	revert, err := models.QueryRestoreTaskByID(db, restore)
+	revert, err := models.QueryRestoreTaskByID(db, task)
 	if err != nil {
 		logger.Fmt.Warnf("RevertSnapshot QuerySnapshotByVersion ERR=%v", err)
 		appG.Response(http.StatusBadRequest, statuscode.QUERYRESTOREFAILED, nil)
 		return
 	}
-	t := logic.NewTargetMachineRevert(&models.DBProxy{DB: db}, &config, &revert, &s)
+	t := logic.NewTargetMachineRevert(&models.DBProxy{DB: db}, &config, &revert, &s, restoreMethod, node)
 	t.Start()
 	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
 	return

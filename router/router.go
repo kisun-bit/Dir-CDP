@@ -105,6 +105,29 @@ func InitRouter() *gin.Engine {
 		//       - on 存储vss增量数据的卷
 		//       - size vss增量数据的卷的存储大小
 		apiv1.POST("/add_storage", v1.AddShadowStorage)
+		// 功能: 创建或修正目录
+		// 方法: POST
+		// 参数(Form):
+		//       - path 目录路径
+		//       - mode 目录权限
+		apiv1.POST("/create_or_update_dir", v1.CreateOrUpdateDir)
+		// 功能: 目标机连接共享目录，并映射为一个驱动器
+		// 方法: POST
+		// 参数(Form):
+		//      - share_ip   源机IP
+		//      - share_name 共享名称
+		apiv1.POST("/smb/connect", v1.SMBConnect)
+		// 功能: 目标机连接共享目录，并映射为一个驱动器
+		// 方法: POST
+		// 参数(Form):
+		//      - share_ip   源机IP
+		//      - share_name 共享名称
+		apiv1.POST("/smb/disconnect", v1.SMBDisconnect)
+		// 功能: 在共享端删除共享
+		// 方法: POST
+		// 参数(Form):
+		//      - share_name 共享名称
+		apiv1.POST("/smb/delete", v1.SMBDelete)
 	}
 
 	return r

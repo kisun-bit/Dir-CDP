@@ -36,7 +36,7 @@ func (c *Snapshot) String() string {
 
 func QueryNeedlessSnapshots(db *gorm.DB, config, task, keep int64) (ss []Snapshot, err error) {
 	r := db.Model(&Snapshot{}).Where(
-		"config=? AND task=?", config, task).Order("time DESC").Offset(int(keep)).Find(&ss)
+		"config=? AND task=?", config, task).Order("id DESC").Offset(int(keep)).Find(&ss)
 	return ss, r.Error
 }
 
@@ -68,4 +68,9 @@ func CountSnapshots(db *gorm.DB, config, task int64) (count int64, err error) {
 
 func CreateSnapshot(db *gorm.DB, snap Snapshot) (err error) {
 	return db.Model(&Snapshot{}).Create(&snap).Error
+}
+
+func UpdateSnapByID(db *gorm.DB, id int64, snap string) (err error) {
+	return db.Model(&Snapshot{}).Where("id = ?", id).Updates(
+		map[string]interface{}{"snapshot": snap}).Error
 }
