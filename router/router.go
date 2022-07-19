@@ -69,6 +69,12 @@ func InitRouter() *gin.Engine {
 		//       - old 文件存储地址(旧)
 		//       - new 文件存储地址(新)
 		apiv1.POST("/rename", v1.Rename)
+		// 功能: 重置文件/目录属性
+		// 方法: POST
+		// 参数(Form):
+		//      - path 路径
+		//      - attr 属性
+		apiv1.POST("/ch_mode", v1.ChangeAttrs)
 		// 功能: 服务器IP修正
 		// 方法: POST
 		// 参数(Form):
@@ -129,6 +135,5 @@ func InitRouter() *gin.Engine {
 		//      - share_name 共享名称
 		apiv1.POST("/smb/delete", v1.SMBDelete)
 	}
-
 	return r
 }

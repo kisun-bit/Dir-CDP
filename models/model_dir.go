@@ -1,6 +1,7 @@
 package models
 
 import (
+	"database/sql"
 	"fmt"
 	"gorm.io/gorm"
 	"jingrongshuan/rongan-fnotify/meta"
@@ -72,14 +73,14 @@ func CreateDirIfNotExists(db *gorm.DB, conf int64, path, ext string, mode os.Fil
 	sqlTmp := `insert into %v ("path","name","parent","mode","ext_info") 
     values ('%v', '%v', '%v', %v, '%v') 
     ON CONFLICT (path) DO NOTHING`
-	sql := fmt.Sprintf(sqlTmp,
+	sql_ := fmt.Sprintf(sqlTmp,
 		_eventDirTable(conf),
 		strings.ReplaceAll(tools.CorrectDirWithPlatform(path, meta.IsWin), `'`, `''`),
 		strings.ReplaceAll(filepath.Base(path), `'`, `''`),
 		strings.ReplaceAll(tools.CorrectDirWithPlatform(filepath.Dir(path), meta.IsWin), `'`, `''`),
 		int64(mode),
 		strings.ReplaceAll(ext, `'`, `''`))
-	return db.Exec(sql).Error
+	return db.Exec(sql_).Error
 }
 
 func QueryDir(db *gorm.DB, conf int64, dir string) (edm EventDirModel, err error) {
@@ -88,6 +89,25 @@ func QueryDir(db *gorm.DB, conf int64, dir string) (edm EventDirModel, err error
 		strings.ReplaceAll(tools.CorrectDirWithPlatform(dir, meta.IsWin), `'`, `''`))
 	err = db.Raw(sql_).Scan(&edm).Error
 	return edm, err
+}
+
+func QueryDirIterator(db *gorm.DB, conf int64) (_ *sql.Rows, err error) {
+	sql_ := fmt.Sprintf(`SELECT * FROM %v`, _eventDirTable(conf))
+	return db.Raw(sql_).Rows()
+}
+
+func DeleteDir(db *gorm.DB, conf int64, dir string) (err error) {
+	sql_ := fmt.Sprintf(`DELETE FROM %v WHERE path='%v'`,
+		_eventDirTable(conf),
+		strings.ReplaceAll(tools.CorrectDirWithPlatform(dir, meta.IsWin), `'`, `''`))
+	return db.Exec(sql_).Error
+}
+
+func DeleteRecursiveDir(db *gorm.DB, conf int64, dir string) (err error) {
+	sql_ := fmt.Sprintf(`DELETE FROM %v WHERE path LIKE '%v%%'`, _eventDirTable(conf),
+		strings.ReplaceAll(strings.ReplaceAll(tools.CorrectDirWithPlatform(dir, meta.IsWin), `'`, `''`),
+			"\\", "\\\\"))
+	return db.Exec(sql_).Error
 }
 
 func UpdateDirMode(db *gorm.DB, conf, id, mode int64) (err error) {

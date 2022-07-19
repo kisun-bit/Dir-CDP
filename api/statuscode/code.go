@@ -38,6 +38,7 @@ const (
 	SMBConnectERR        = 0x10027
 	SMBDisConnectERR     = 0x10028
 	SMBDelShareERR       = 0x10029
+	CHANGEMODEERR        = 0x10030
 )
 
 var MSGFlag = map[int]string{
@@ -78,4 +79,5 @@ var MSGFlag = map[int]string{
 	SMBConnectERR:        "连接共享文件夹失败",
 	SMBDisConnectERR:     "断开共享文件夹连接失败",
 	SMBDelShareERR:       "删除共享文件夹失败",
+	CHANGEMODEERR:        "重置文件属性失败",
 }

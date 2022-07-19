@@ -154,6 +154,7 @@ func (w *Walker) walkDir(dir string) {
 			continue
 		}
 		if entry.Mode()&os.ModeSymlink != 0 {
+			// TODO 链接文件
 			continue
 		}
 		if entry.IsDir() {

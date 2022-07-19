@@ -71,7 +71,7 @@ const (
 	WinShareUser = "RunstorShare"
 	WinSharePwd  = "qX4kUeFc"
 
-	DefaultDRQueueSize           = 100                                       // 文件备份/恢复通道的默认缓冲区大小
+	DefaultDRQueueSize           = 10000000                                  // 文件备份/恢复通道的默认缓冲区大小
 	DefaultRetryTimeInterval     = 5 * time.Second                           // 重试间隔时间
 	DefaultEnumPathChannelSize   = 10                                        // 基于扫描时枚举路径的默认通道缓存
 	DefaultTransferRetryTimes    = 5                                         // 上传/下载文件默认的重试次数

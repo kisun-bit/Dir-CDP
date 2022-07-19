@@ -72,7 +72,7 @@ func Download(c *gin.Context) {
 
 func Delete(c *gin.Context) {
 	appG := app.Gin{C: c}
-	file := c.PostForm("b64")
+	file := c.PostForm("file")
 	if file == meta.UnsetStr {
 		appG.Response(http.StatusBadRequest, statuscode.LACKFILEPATH, nil)
 		return
@@ -83,8 +83,13 @@ func Delete(c *gin.Context) {
 	} else {
 		if err = os.Remove(file); err != nil {
 			logger.Fmt.Warnf("remove `%v` failed ERR=%v", file, err)
-			appG.Response(http.StatusBadRequest, statuscode.DELFILEERROR, nil)
-			return
+			if err = os.RemoveAll(file); err != nil {
+				logger.Fmt.Warnf("remove all `%v` failed ERR=%v", file, err)
+			}
+			if err != nil {
+				appG.Response(http.StatusBadRequest, statuscode.DELFILEERROR, nil)
+				return
+			}
 		}
 	}
 
@@ -110,11 +115,26 @@ func Rename(c *gin.Context) {
 	return
 }
 
+func ChangeAttrs(c *gin.Context) {
+	appG := app.Gin{C: c}
+
+	path := c.PostForm("path")
+	attr, _ := strconv.ParseInt(c.PostForm("mode"), 10, 64)
+
+	if err := os.Chmod(path, os.FileMode(attr)); err != nil {
+		appG.Response(http.StatusBadRequest, statuscode.CHANGEMODEERR, nil)
+		return
+	}
+	appG.Response(http.StatusOK, statuscode.SUCCESS, nil)
+	return
+}
+
 func CreateOrUpdateDir(c *gin.Context) {
 	appG := app.Gin{C: c}
 
 	path := c.PostForm("path")
 	mode, e := strconv.ParseInt(c.PostForm("mode"), 10, 64)
+
 	if e != nil {
 		logger.Fmt.Warnf("CreateOrUpdateDir ParseInt ERR=%v", e)
 		appG.Response(http.StatusBadRequest, statuscode.CorrectDirFailed, nil)

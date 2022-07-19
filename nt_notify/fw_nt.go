@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	WatchingBufferSize = 1 << 10
-	WatchingQueueSize  = 4
+	WatchingBufferSize = 1 << 20
+	WatchingQueueSize  = 1000000
 )
 
 type Win32Watcher struct {
@@ -163,9 +163,10 @@ func (w *Win32Watcher) collectChangeInfo() {
 		info := new(FileWatchingObj)
 		info.Path = path
 		info.Event = tools.ConvertToWin32Event(raw.Action)
-		info.Name = name
+		info.Name = filepath.Base(info.Path)
 		if meta.AppIsDebugMode {
-			logging.Logger.Fmt.Debugf("%v事件 >>>>>>>>>> `%v`", info.Event.Str(), info.Path)
+			logging.Logger.Fmt.Debugf(
+				"%v事件(CAP:%v) >>>>>>>>>> (%v) `%v`", info.Event.Str(), cap(w.buffer), info.Name, info.Path)
 		}
 
 		if !w.isValidDepth(info.Path) {
@@ -173,22 +174,21 @@ func (w *Win32Watcher) collectChangeInfo() {
 		}
 
 		if w.NeedDelete(info.Event) {
-			//fmt.Println(info.Path)
+			// TODO 若删除的是目录需要手动递归删除
 		} else {
 			fi, err := os.Stat(path)
 			if err != nil {
 				break
 			}
-			if fi.IsDir() {
-				break
-			}
-			if fi.Mode()&os.ModeSymlink != 0 {
-				break
-			}
-			info.Time = fi.ModTime().Unix()
 			info.Type = tools.ConvertMode2FType(fi.Mode())
-			info.Mode = fi.Mode()
-			info.Size = fi.Size()
+			if fi.Mode()&os.ModeSymlink != 0 {
+				// TODO 链接文件备份
+				break
+			} else {
+				info.Time = fi.ModTime().Unix()
+				info.Mode = fi.Mode()
+				info.Size = fi.Size()
+			}
 		}
 
 		if w.isStopped() {

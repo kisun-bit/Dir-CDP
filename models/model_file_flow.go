@@ -137,6 +137,11 @@ func UpdateFileFlowStatus(db *gorm.DB, conf, f int64, status string) (err error)
 	return db.Exec(sql_).Error
 }
 
+func UpdateFileFlowMode(db *gorm.DB, conf, f, mode int64) (err error) {
+	sql_ := fmt.Sprintf(`UPDATE %v SET mode='%v' WHERE id=%v`, _eventFileTable(conf), mode, f)
+	return db.Exec(sql_).Error
+}
+
 type _exist struct {
 	Exists string `json:"exists"`
 }
@@ -168,7 +173,8 @@ func QueryLastSameNameFile(db *gorm.DB, conf int64, path string) (f EventFileMod
 }
 
 func QueryRecursiveFilesIteratorInDir(db *gorm.DB, conf int64, dir string) (rows *sql.Rows, err error) {
-	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path LIKE "%v%%" AND type != 2`, _eventFileTable(conf), dir)
+	sql_ := fmt.Sprintf(`SELECT * FROM %v WHERE path LIKE '%v%%' AND type != 2`, _eventFileTable(conf),
+		strings.ReplaceAll(dir, "\\", "\\\\"))
 	return db.Raw(sql_).Rows()
 }
 

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/asmcos/requests"
 	"github.com/boltdb/bolt"
 	"github.com/gofrs/flock"
 	"github.com/gofrs/uuid"
@@ -72,9 +71,10 @@ type incrBackupProxy struct {
 }
 
 type watcherWrapper struct {
-	watcher      *nt_notify.Win32Watcher
-	watcherPatch *eventDelayPusher // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
-	watcherQueue chan nt_notify.FileWatchingObj
+	watcher          *nt_notify.Win32Watcher
+	watcherFilePatch *eventDelayPusher // 用于对装载变更事件的通道WatcherQueue做相邻去重处理以及尾元素处理
+	WatcherDirPatch  *eventDelayPusher // 针对CTRL+Z撤销目录事件做的优化
+	watcherQueue     chan nt_notify.FileWatchingObj
 }
 
 func initIncrBackupProxy(poolSize, incrQueueSize int) *incrBackupProxy {
@@ -93,6 +93,7 @@ type storage struct {
 	dirSession    string
 	deleteSession string
 	renameSession string
+	modeSession   string
 	// 一下属性仅在目标存储为对象存储时有效
 	s3Client  gos3.S3Client
 	s3Session *session.Session
@@ -269,13 +270,6 @@ func (c *CDPExecutor) inRetryErr(ec ErrorCode) bool {
 }
 
 func (c *CDPExecutor) StartWithRetry() (err error) {
-	if err = c.moreInit(); err != nil {
-		_ = c.reporter.ReportError(StepInitArgsF, err)
-		logger.Fmt.Errorf("%v.StartWithRetry moreInit err=%v", c.Str(), err)
-		return
-	}
-	_ = c.reporter.ReportInfo(StepInitArgs)
-
 	// 无限重试策略
 	go func() {
 		for {
@@ -283,6 +277,12 @@ func (c *CDPExecutor) StartWithRetry() (err error) {
 				_ = c.reporter.ReportError(StepRetryCDPMatchSer)
 				break
 			}
+			if err = c.moreInit(); err != nil {
+				_ = c.reporter.ReportError(StepInitArgsF, err)
+				logger.Fmt.Errorf("%v.StartWithRetry moreInit err=%v", c.Str(), err)
+				return
+			}
+			_ = c.reporter.ReportInfo(StepInitArgs)
 			if c.DBDriver, err = models.NewDBProxyWithInit(c.confObj.ExtInfoJson.ServerAddress); err != nil {
 				logger.Fmt.Infof("%v.StartWithRetry. will sleep 5s...", c.Str())
 			} else {
@@ -561,6 +561,8 @@ func (c *CDPExecutor) moreInit() (err error) {
 			"https://%s:%v/api/v1/delete", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		c.storage.renameSession = fmt.Sprintf(
 			"https://%s:%v/api/v1/rename", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
+		c.storage.modeSession = fmt.Sprintf(
+			"https://%s:%v/api/v1/ch_mode", c.confObj.TargetHostJson.IP, c.confObj.TargetHostJson.Port)
 		logger.Fmt.Infof("%v.moreInit 2h session ->%v", c.Str(), c.storage.uploadSession)
 
 	} else if c.is2s3() {
@@ -842,8 +844,10 @@ func (c *CDPExecutor) deleteWhenDisableVersion() (err error) {
 	var (
 		row *sql.Rows
 		ffm models.EventFileModel
+		dir models.EventDirModel
 	)
 
+	// 文件
 	if row, err = models.QueryFileIteratorByConfig(
 		c.DBDriver.DB, c.taskObj.ConfID); err != nil {
 		logger.Fmt.Errorf("%v.deleteWhenDisableVersion Error=%v", c.Str(), err)
@@ -861,7 +865,27 @@ func (c *CDPExecutor) deleteWhenDisableVersion() (err error) {
 		}
 		path := filepath.Join(ffm.Parent, ffm.Name)
 		if _, e := os.Stat(path); e != nil {
-			_ = c.deleteFiles(ffm.Path, ffm.Name, meta.EventDesc[meta.Win32EventFullScan.Str()])
+			_ = c.deletePath(ffm.Path, ffm.Name, meta.EventDesc[meta.Win32EventFullScan.Str()])
+		}
+	}
+
+	// 目录
+	if row, err = models.QueryDirIterator(c.DBDriver.DB, c.taskObj.ConfID); err != nil {
+		logger.Fmt.Errorf("%v.deleteWhenDisableVersion QueryDirIterator Error=%v", c.Str(), err)
+		return err
+	}
+	defer row.Close()
+
+	for row.Next() {
+		if c.isStopped() {
+			return nil
+		}
+		if err = c.DBDriver.DB.ScanRows(row, &dir); err != nil {
+			logger.Fmt.Errorf("%v.deleteWhenDisableVersion. ScanRows-Err=%v", c.Str(), err)
+			return err
+		}
+		if _, e := os.Stat(dir.Path); e != nil {
+			_ = c.deleteDirInRemote(dir.Path)
 		}
 	}
 	return nil
@@ -883,6 +907,9 @@ func (c *CDPExecutor) scanNotify() {
 
 	for fwo := range c.fbp.walkerQueue {
 		if fwo.Type == meta.FTDir {
+			if !c.isValidPath(fwo.Path, fwo.Time) {
+				continue
+			}
 			if err = c.createDir(fwo.Path); err != nil {
 				return
 			}
@@ -905,17 +932,27 @@ func (c *CDPExecutor) scanNotify() {
 func (c *CDPExecutor) createDir(dir string) (err error) {
 	fi, err := os.Stat(dir)
 	if err != nil {
+		logger.Fmt.Warnf("%v.createDir failed to get file info, err=%v", c.Str(), err)
 		return err
 	}
-	if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, dir, "", fi.Mode()); err != nil {
-		return
-	}
+
+	defer func() {
+		if err == nil {
+			if err = models.CreateDirIfNotExists(c.DBDriver.DB, c.confObj.ID, dir, "", fi.Mode()); err != nil {
+				logger.Fmt.Warnf("%v.createDir CreateDirIfNotExists, err=%v", c.Str(), err)
+				return
+			}
+		}
+	}()
+
 	edm, err := models.QueryDir(c.DBDriver.DB, c.confObj.ID, dir)
 	if err != nil || edm.ID == 0 {
+		logger.Fmt.Warnf("%v.createDir QueryDir, err=%v", c.Str(), err)
 		return c.createDirRemote(dir, int64(fi.Mode()))
 	}
 	if edm.Mode != int64(fi.Mode()) {
 		if err = c.createDirRemote(dir, int64(fi.Mode())); err != nil {
+			logger.Fmt.Warnf("%v.createDir createDirRemote, err=%v", c.Str(), err)
 			return
 		}
 		return models.UpdateDirMode(c.DBDriver.DB, c.confObj.ID, edm.ID, int64(fi.Mode()))
@@ -926,6 +963,7 @@ func (c *CDPExecutor) createDir(dir string) (err error) {
 func (c *CDPExecutor) createDirRemote(dir string, mode int64) (err error) {
 	o, _, _, t, err := c.confObj.SpecifyTarget(dir)
 	if err != nil {
+		logger.Fmt.Warnf("%v.createDirRemote SpecifyTarget, err=%v", c.Str(), err)
 		return err
 	}
 	td := tools.GenerateRemoteHostKey(o, dir, t, tools.IsWin(c.confObj.TargetHostJson.OS))
@@ -936,7 +974,28 @@ func (c *CDPExecutor) createDirRemote(dir string, mode int64) (err error) {
 	if meta.AppIsDebugMode {
 		logger.Fmt.Debugf("%v | (权限:%v)创建目录`%v`", c.Str(), os.FileMode(mode).String(), td)
 	}
-	_, err = RequestUrl(http.MethodPost, c.storage.dirSession, form)
+	if _, err = RequestUrl(http.MethodPost, c.storage.dirSession, form); err != nil {
+		return
+	}
+	return
+}
+
+func (c *CDPExecutor) updateMode(path string, mode int64) (err error) {
+	o, _, _, t, err := c.confObj.SpecifyTarget(path)
+	if err != nil {
+		return err
+	}
+	td := tools.GenerateRemoteHostKey(o, path, t, tools.IsWin(c.confObj.TargetHostJson.OS))
+	form := map[string]string{
+		"path": td,
+		"mode": strconv.FormatInt(mode, 10),
+	}
+	if meta.AppIsDebugMode {
+		logger.Fmt.Debugf("%v | (权限:%v)更新属性`%v`", c.Str(), os.FileMode(mode).String(), td)
+	}
+	if _, err = RequestUrl(http.MethodPost, c.storage.modeSession, form); err != nil {
+		return
+	}
 	return
 }
 
@@ -979,13 +1038,90 @@ func (c *CDPExecutor) fsNotify() {
 	}
 }
 
+func (c *CDPExecutor) AsyncHandleCZOperation(dir string) {
+	go func() {
+		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if info.Mode()&os.ModeSymlink != 0 {
+				// TODO 链接文件
+				return nil
+			}
+			if info.IsDir() {
+				if err = c.createDir(path); err != nil {
+					logger.Fmt.Warnf("%v.AsyncHandleCZOperation Walk failed to create dir `%v`",
+						c.Str(), path)
+					return nil
+				}
+			}
+			__fwo := nt_notify.FileWatchingObj{
+				FileInfo: nt_notify.FileInfo{
+					Time: info.ModTime().Unix(),
+					Path: path,
+					Name: filepath.Base(path),
+					Type: tools.ConvertMode2FType(info.Mode()),
+					Mode: info.Mode(),
+					Size: info.Size(),
+				},
+				Event: meta.Win32EventCreate,
+			}
+			if !c.isValidPath(__fwo.Path, __fwo.Time) {
+				return nil
+			}
+			_, _ = c.notifyOneFileEvent(__fwo)
+			return nil
+		})
+	}()
+}
+
 func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 	var err error
 
-	go c.putFileEventWhenTimeout(w)
+	go c.putEventWhenTimeout(w, true)
+	go c.putEventWhenTimeout(w, false)
 	for fwo := range w.watcherQueue {
 		if c.isStopped() {
 			return
+		}
+		if fwo.Type == meta.FTDir {
+			// 忽略处理删除目录事件
+			if fwo.Event == meta.Win32EventRenameFrom || fwo.Event == meta.Win32EventDelete {
+				// do nothing
+			} else {
+				if !c.isValidPath(fwo.Path, fwo.Time) {
+					logger.Fmt.Debugf("%v.notifyOneDir invalid dir > `%v`", c.Str(), fwo.Path)
+					continue
+				}
+				if err = c.createDir(fwo.Path); err != nil {
+					logger.Fmt.Warnf("%v.notifyOneDir failed to create dir `%v`", c.Str(), fwo.Path)
+					return
+				}
+
+				//// 为目录事件创建一个缓冲区，
+				//// 目的是达到目录更新事件去重以及捕捉CTRL+Z事件
+				//if last, _, ok := w.WatcherDirPatch.Load(); !ok {
+				//	last = fwo
+				//	w.WatcherDirPatch.Store(fwo)
+				//} else {
+				//	// 捕捉到新的不同名目录的变更记录
+				//	if fwo.Path != last.Path {
+				//		// 遍历此目录，依次将目录下的文件入消费队列
+				//		if last.Event != meta.Win32EventCreate {
+				//			w.WatcherDirPatch.Del()
+				//		} else {
+				//			c.AsyncHandleCZOperation(last.Path)
+				//		}
+				//		// 用新目录覆盖掉旧文件记录
+				//		w.WatcherDirPatch.Store(fwo)
+				//	} else {
+				//		// 相同的目录变更记录
+				//		// 如果上一次是CREATE事件，本次变更记录为非CREATE事件，则直接忽略此目录的事件追踪
+				//		if last.Event == meta.Win32EventCreate && fwo.Event != meta.Win32EventCreate {
+				//			w.WatcherDirPatch.Del()
+				//		}
+				//	}
+				//}
+
+				continue
+			}
 		}
 		/*连续文件变更记录的去重
 		补充：
@@ -1003,7 +1139,11 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 			fallthrough
 		case meta.Win32EventRenameFrom:
 			if !c.confObj.EnableVersion {
-				_ = c.deleteFiles(fwo.Path, fwo.Name, meta.EventDesc[fwo.Event.Str()])
+				if fwo.Type == meta.FTDir {
+					_ = c.deleteDirInRemote(fwo.Path)
+				} else {
+					_ = c.deletePath(fwo.Path, fwo.Name, meta.EventDesc[fwo.Event.Str()])
+				}
 			}
 			continue
 		case meta.Win32EventCreate:
@@ -1011,9 +1151,9 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 		case meta.Win32EventRenameTo:
 			fallthrough
 		case meta.Win32EventUpdate:
-			if last, _, ok := w.watcherPatch.Load(); !ok {
+			if last, _, ok := w.watcherFilePatch.Load(); !ok {
 				last = fwo
-				w.watcherPatch.Store(fwo)
+				w.watcherFilePatch.Store(fwo)
 				break
 			} else {
 				// 捕捉到新的不同名文件的变更记录
@@ -1022,20 +1162,29 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 					if err != nil {
 						return
 					}
-					w.watcherPatch.Store(fwo) // 用新文件覆盖掉旧文件记录
+					w.watcherFilePatch.Store(fwo) // 用新文件覆盖掉旧文件记录
 				} else {
 					// CTRL+V拷贝文件会产生create、update事件集
 					// - 若本次到来的是同名文件的update事件且上一次事件是create事件
 					//   则忽略本次的create、update事件集
 					// - 否则更新Event
-					if last.Event == meta.Win32EventCreate && fwo.Event == meta.Win32EventUpdate {
-						if meta.AppIsDebugMode {
-							logger.Fmt.Infof("拷贝未结束事件， file=`%v`", fwo.Path)
-						}
-						w.watcherPatch.Del()
-						continue
+					//
+					// 注意:
+					// 1. size为0的文件仅仅只会产生create和update两个事件
+					// 2. CTRL+Z撤销删除文件事件仅仅只会产生create和update两个事件
+					// 3. CTRL+Z撤销删除目录事件仅仅只会产生create一个事件
+					if last.Event == meta.Win32EventCreate && fwo.Event == meta.Win32EventUpdate && fwo.Size != 0 {
+						//if time.Now().Unix() - fwo.Time <= 5 {
+						//	if meta.AppIsDebugMode {
+						//		logger.Fmt.Debugf("拷贝未结束事件， file=`%v`", fwo.Path)
+						//	}
+						//	w.watcherFilePatch.Del()
+						//	continue
+						//}
+						// TODO 不考虑CTRL+Z事件
+						w.watcherFilePatch.Store(fwo)
 					} else {
-						w.watcherPatch.Store(fwo) // 更新Event
+						w.watcherFilePatch.Store(fwo) // 更新Event
 					}
 				}
 			}
@@ -1096,9 +1245,10 @@ func (c *CDPExecutor) startWatchers() (err error) {
 			continue
 		}
 		c.ibp.watchers = append(c.ibp.watchers, &watcherWrapper{
-			watcher:      w,
-			watcherPatch: &eventDelayPusher{m: new(sync.Map)},
-			watcherQueue: wq,
+			watcher:          w,
+			watcherFilePatch: &eventDelayPusher{m: new(sync.Map)},
+			WatcherDirPatch:  &eventDelayPusher{m: new(sync.Map)},
+			watcherQueue:     wq,
 		})
 	}
 
@@ -1106,11 +1256,56 @@ func (c *CDPExecutor) startWatchers() (err error) {
 		logger.Fmt.Infof("%v.startWatchers start `%v` is ok", c.Str(), w.watcher.Str())
 		go c.notifyOneDir(w)
 	}
+
 	_ = c.reporter.ReportInfo(StepStartWatchers)
 	return
 }
 
-func (c *CDPExecutor) deleteFiles(path, name, eventDesc string) (err error) {
+func (c *CDPExecutor) deletePath(path, name, eventDesc string) (err error) {
+	if eventDesc == meta.EventDesc[meta.EventCode[meta.Win32EventFullScan]] {
+		if err = c.deleteOneFile(path, name, eventDesc); err != nil {
+			logger.Fmt.Errorf("%v.deletePath by scanning File=%v ScanRows-Err=%v", c.Str(), path, err)
+			return err
+		}
+	}
+	// 可以确定的是在POSIX标准下，不允许存在同父路径的同名目录和文件
+	ffm, _ := models.QueryLastSameNameFile(c.DBDriver.DB, c.confObj.ID, path)
+	dir, _ := models.QueryDir(c.DBDriver.DB, c.confObj.ID, tools.CorrectDirWithPlatform(path, meta.IsWin))
+	if ffm.ID != 0 && dir.ID == 0 {
+		if err = c.deleteOneFile(ffm.Path, ffm.Name, eventDesc); err != nil {
+			logger.Fmt.Errorf("%v.deletePath by file File=%v ScanRows-Err=%v", c.Str(), path, err)
+			return err
+		}
+	} else if ffm.ID == 0 && dir.ID != 0 {
+		var row *sql.Rows
+		var ffm models.EventFileModel
+		if row, err = models.QueryRecursiveFilesIteratorInDir(c.DBDriver.DB, c.confObj.ID, dir.Path); err != nil {
+			logger.Fmt.Errorf("%v.deletePath invalid dir %s, err=%v", c.Str(), dir.Path, err)
+			return err
+		}
+		defer row.Close()
+		for row.Next() {
+			if c.isStopped() {
+				return nil
+			}
+			if err = c.DBDriver.DB.ScanRows(row, &ffm); err != nil {
+				logger.Fmt.Errorf("%v.restoreOneSet File=%v ScanRows-Err=%v", c.Str(), ffm.Path, err)
+				return err
+			}
+			if err = c.deleteOneFile(ffm.Path, ffm.Name, eventDesc); err != nil {
+				logger.Fmt.Errorf("%v.deletePath by dir File=%v ScanRows-Err=%v", c.Str(), path, err)
+				continue // TODO 忽略异常
+			}
+		}
+		defer c.deleteDirInRemote(dir.Path)
+	} else {
+		logger.Fmt.Warnf("%v.deletePath unsupported path `%v`", c.Str(), path)
+		return errors.New("unsupported path")
+	}
+	return nil
+}
+
+func (c *CDPExecutor) deleteOneFile(path, name, eventDesc string) (err error) {
 	if c.is2host() {
 		// 如果备机存在则删除
 		if meta.AppIsDebugMode {
@@ -1155,21 +1350,39 @@ func (c *CDPExecutor) deleteFilesInRemote(path, name string) (err error) {
 	}
 
 	for _, file := range funk.UniqString(keys) {
-		//logger.Fmt.Infof("%v.deleteFilesInRemote delete %v related %v", c.Str(), file, path)
-		data := requests.Datas{"b64": file}
-		resp, e := requests.Post(c.storage.deleteSession, data)
-		if e != nil {
-			logger.Fmt.Errorf("%v.Post(%v) ERR=%v", c.Str(), c.storage.deleteSession, e)
-			err = e
-			continue
+		form := map[string]string{
+			"file": file,
 		}
-		if resp.R.StatusCode != http.StatusOK {
-			err = errors.New("delete failed with 400 code")
-			continue
+		out, e := RequestUrl(http.MethodPost, c.storage.deleteSession, form)
+		if e != nil {
+			logger.Fmt.Errorf("%v.Post(%v) out=(%v) ERR=%v", c.Str(), string(out), c.storage.deleteSession, e)
+			err = e
+			return
 		}
 	}
 
 	return models.DeleteNoVersionFilesByPath(c.DBDriver.DB, c.confObj.ID, path)
+}
+
+func (c *CDPExecutor) deleteDirInRemote(dir string) (err error) {
+	o, _, _, t, err := c.confObj.SpecifyTarget(dir)
+	if err != nil {
+		return err
+	}
+	td := tools.GenerateRemoteHostKey(o, dir, t, tools.IsWin(c.confObj.TargetHostJson.OS))
+	if meta.AppIsDebugMode {
+		logger.Fmt.Debugf("%v.deleteDirInRemote will delete target path `%v`", c.Str(), td)
+	}
+	form := map[string]string{
+		"file": td,
+	}
+	out, e := RequestUrl(http.MethodPost, c.storage.deleteSession, form)
+	if e != nil {
+		logger.Fmt.Errorf("%v.Post(%v) out=(%v) ERR=%v", c.Str(), string(out), c.storage.deleteSession, e)
+		err = e
+		return
+	}
+	return models.DeleteRecursiveDir(c.DBDriver.DB, c.confObj.ID, dir)
 }
 
 func (c *CDPExecutor) deleteFilesInS3(path, name string) (err error) {
@@ -1201,6 +1414,8 @@ func (c *CDPExecutor) deleteFilesInS3(path, name string) (err error) {
 }
 
 func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.FileWatchingObj, full bool) (err error) {
+	var enqueue bool
+
 	if strings.Contains(fwo.Name, meta.IgnoreFlag) {
 		return
 	}
@@ -1209,6 +1424,30 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 		return err
 	}
 	if fh.Path != meta.UnsetStr {
+		defer func() {
+			if enqueue {
+				return
+			}
+			if fh.Status != meta.FFStatusFinished {
+				return
+			}
+			if err != nil {
+				return
+			}
+			// 如果当前文件与同名文件的mtime相同，但mode不相同，则仅同名文件的mode即可
+			if fh.Mode != int64(fwo.Mode) {
+				if e := c.updateMode(fwo.Path, int64(fwo.Mode)); e != nil {
+					logger.Fmt.Warnf("%v.putFile2FullOrIncrQueue file(%v) updateMode ERR=%v",
+						c.Str(), fwo.Path, e)
+					return
+				}
+				if e := models.UpdateFileFlowMode(c.DBDriver.DB, c.confObj.ID, fh.ID, int64(fwo.Mode)); e != nil {
+					logger.Fmt.Warnf("%v.putFile2FullOrIncrQueue file(%v) UpdateFileFlowMode ERR=%v",
+						c.Str(), fwo.Path, e)
+					return
+				}
+			}
+		}()
 		/*上传条件说明：
 		情况1：存在同名文件、重载任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
 		      不做处理
@@ -1217,7 +1456,7 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 		情况3：存在同名文件、重载任务、同名文件状态为非FINISHED(WATCHED, SYNCING, ERROR)
 		      处理
 		情况4：存在同名文件、普通任务、同名文件状态为FINISHED，当前文件与同名文件的mtime相同
-		      处理
+		      不做处理
 		情况5：存在同名文件、普通任务、同名文件状态为FINISHED，当前文件与同名文件的mtime不相同
 		      处理
 		情况6：存在同名文件、普通任务、同名文件状态为WATCHED或SYNCING
@@ -1283,8 +1522,8 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 
 	// 记录事件至DB和Queue
 	if err = c.createDir(filepath.Dir(fwo.Path)); err != nil {
-		logger.Fmt.Errorf("%v.fsNotify createDir Error=%s", c.Str(), err.Error())
-		return
+		logger.Fmt.Warnf("%v.fsNotify createDir Error=%s", c.Str(), err.Error())
+		return nil
 	}
 	fm, err := c.notifyOneFileEvent(fwo)
 	if err != nil {
@@ -1297,6 +1536,7 @@ func (c *CDPExecutor) putFile2FullOrIncrQueue(w *watcherWrapper, fwo nt_notify.F
 		} else {
 			c.fbp.fullQueue <- fm
 		}
+		enqueue = true // 将已入队列的标记置为True
 	}
 	return
 }
@@ -1369,11 +1609,17 @@ func (c *CDPExecutor) initTaskOnce() (err error) {
 }
 
 func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models.EventFileModel, err error) {
+	// 再次获取文件信息，得到最新的最后修改时间
+	fi, err := os.Stat(e.Path)
+	if err != nil {
+		return fm, err
+	}
+
 	ff := new(models.EventFileModel)
 	ff.Event = meta.EventCode[e.Event]
 	ff.Create = time.Now().Unix()
 	ff.ConfID = c.confObj.ID
-	ff.Time = e.Time
+	ff.Time = fi.ModTime().Unix()
 	ff.Mode = int64(e.Mode)
 	ff.Size = e.Size
 	ff.Path, _ = filepath.Abs(e.Path)
@@ -1421,8 +1667,8 @@ func (c *CDPExecutor) notifyOneFileEvent(e nt_notify.FileWatchingObj) (fm models
 	return *ff, err
 }
 
-func (c *CDPExecutor) putFileEventWhenTimeout(w *watcherWrapper) {
-	logger.Fmt.Infof("%v.putFileEventWhenTimeout `%v` start...", c.Str(), w.watcher.Str())
+func (c *CDPExecutor) putEventWhenTimeout(w *watcherWrapper, isDir bool) {
+	logger.Fmt.Infof("%v.putEventWhenTimeout `%v` start...", c.Str(), w.watcher.Str())
 
 	go func() {
 		var (
@@ -1433,7 +1679,7 @@ func (c *CDPExecutor) putFileEventWhenTimeout(w *watcherWrapper) {
 		)
 
 		defer func() {
-			logger.Fmt.Infof("%v.putFileEventWhenTimeout `%v` exit...", c.Str(), w.watcher.Str())
+			logger.Fmt.Infof("%v.putEventWhenTimeout `%v` exit...", c.Str(), w.watcher.Str())
 			c.catchErr(err)
 		}()
 
@@ -1442,17 +1688,30 @@ func (c *CDPExecutor) putFileEventWhenTimeout(w *watcherWrapper) {
 				return
 			}
 			time.Sleep(meta.DefaultTailEventHandleSecs)
-			if fwo, t, ok = w.watcherPatch.Load(); !ok {
-				continue
-			}
-
-			if time.Now().Sub(time.Unix(t, 0)) > meta.DefaultTailEventHandleSecs {
-				if err = c.putFile2FullOrIncrQueue(w, fwo, false); err != nil {
-					logger.Fmt.Errorf("%v.putFile2FullOrIncrQueue `%v` ERR=%v",
-						c.Str(), w.watcher.Str(), err)
-					return
+			if !isDir {
+				if fwo, t, ok = w.watcherFilePatch.Load(); !ok {
+					continue
 				}
-				w.watcherPatch.Del()
+				if time.Now().Sub(time.Unix(t, 0)) > meta.DefaultTailEventHandleSecs {
+					if err = c.putFile2FullOrIncrQueue(w, fwo, false); err != nil {
+						logger.Fmt.Errorf("%v.putFile2FullOrIncrQueue `%v` ERR=%v",
+							c.Str(), w.watcher.Str(), err)
+						return
+					}
+					w.watcherFilePatch.Del()
+				}
+			} else if isDir {
+				if fwo, t, ok = w.WatcherDirPatch.Load(); !ok {
+					continue
+				}
+				if time.Now().Sub(time.Unix(t, 0)) > meta.DefaultTailEventHandleSecs {
+					if fwo.Event == meta.Win32EventCreate {
+						c.AsyncHandleCZOperation(fwo.Path)
+					}
+					w.watcherFilePatch.Del()
+				}
+			} else {
+				break
 			}
 		}
 	}()
