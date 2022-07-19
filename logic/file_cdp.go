@@ -947,7 +947,7 @@ func (c *CDPExecutor) createDir(dir string) (err error) {
 
 	edm, err := models.QueryDir(c.DBDriver.DB, c.confObj.ID, dir)
 	if err != nil || edm.ID == 0 {
-		logger.Fmt.Warnf("%v.createDir QueryDir, err=%v", c.Str(), err)
+		//logger.Fmt.Warnf("%v.createDir QueryDir, err=%v", c.Str(), err)
 		return c.createDirRemote(dir, int64(fi.Mode()))
 	}
 	if edm.Mode != int64(fi.Mode()) {
@@ -1051,6 +1051,7 @@ func (c *CDPExecutor) AsyncHandleCZOperation(dir string) {
 						c.Str(), path)
 					return nil
 				}
+				return nil
 			}
 			__fwo := nt_notify.FileWatchingObj{
 				FileInfo: nt_notify.FileInfo{
@@ -1066,7 +1067,11 @@ func (c *CDPExecutor) AsyncHandleCZOperation(dir string) {
 			if !c.isValidPath(__fwo.Path, __fwo.Time) {
 				return nil
 			}
-			_, _ = c.notifyOneFileEvent(__fwo)
+			e, err := c.notifyOneFileEvent(__fwo)
+			if err != nil {
+				return nil
+			}
+			c.ibp.incrQueue <- e
 			return nil
 		})
 	}()
@@ -1095,30 +1100,30 @@ func (c *CDPExecutor) notifyOneDir(w *watcherWrapper) {
 					return
 				}
 
-				//// 为目录事件创建一个缓冲区，
-				//// 目的是达到目录更新事件去重以及捕捉CTRL+Z事件
-				//if last, _, ok := w.WatcherDirPatch.Load(); !ok {
-				//	last = fwo
-				//	w.WatcherDirPatch.Store(fwo)
-				//} else {
-				//	// 捕捉到新的不同名目录的变更记录
-				//	if fwo.Path != last.Path {
-				//		// 遍历此目录，依次将目录下的文件入消费队列
-				//		if last.Event != meta.Win32EventCreate {
-				//			w.WatcherDirPatch.Del()
-				//		} else {
-				//			c.AsyncHandleCZOperation(last.Path)
-				//		}
-				//		// 用新目录覆盖掉旧文件记录
-				//		w.WatcherDirPatch.Store(fwo)
-				//	} else {
-				//		// 相同的目录变更记录
-				//		// 如果上一次是CREATE事件，本次变更记录为非CREATE事件，则直接忽略此目录的事件追踪
-				//		if last.Event == meta.Win32EventCreate && fwo.Event != meta.Win32EventCreate {
-				//			w.WatcherDirPatch.Del()
-				//		}
-				//	}
-				//}
+				// 为目录事件创建一个缓冲区，
+				// 目的是达到目录更新事件去重以及捕捉CTRL+Z事件
+				if last, _, ok := w.WatcherDirPatch.Load(); !ok {
+					last = fwo
+					w.WatcherDirPatch.Store(fwo)
+				} else {
+					// 捕捉到新的不同名目录的变更记录
+					if fwo.Path != last.Path {
+						// 遍历此目录，依次将目录下的文件入消费队列
+						if last.Event != meta.Win32EventCreate {
+							w.WatcherDirPatch.Del()
+						} else {
+							c.AsyncHandleCZOperation(last.Path)
+						}
+						// 用新目录覆盖掉旧文件记录
+						w.WatcherDirPatch.Store(fwo)
+					} else {
+						// 相同的目录变更记录
+						// 如果上一次是CREATE事件，本次变更记录为非CREATE事件，则直接忽略此目录的事件追踪
+						if last.Event == meta.Win32EventCreate && fwo.Event != meta.Win32EventCreate {
+							w.WatcherDirPatch.Del()
+						}
+					}
+				}
 
 				continue
 			}
@@ -1708,7 +1713,7 @@ func (c *CDPExecutor) putEventWhenTimeout(w *watcherWrapper, isDir bool) {
 					if fwo.Event == meta.Win32EventCreate {
 						c.AsyncHandleCZOperation(fwo.Path)
 					}
-					w.watcherFilePatch.Del()
+					w.WatcherDirPatch.Del()
 				}
 			} else {
 				break

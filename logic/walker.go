@@ -139,13 +139,13 @@ func (w *Walker) walkDir(dir string) {
 	}
 
 	if w.isStopped() {
-		logger.Fmt.Info("%v.walkDir【终止】", w.String())
+		logger.Fmt.Infof("%v.walkDir【终止】", w.String())
 		return
 	}
 
 	for _, entry := range w.dirListObjs(dir) {
 		if w.isStopped() {
-			logger.Fmt.Info("%v.walkDir【终止】", w.String())
+			logger.Fmt.Infof("%v.walkDir【终止】", w.String())
 			return
 		}
 
