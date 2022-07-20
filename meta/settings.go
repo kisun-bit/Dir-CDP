@@ -12,13 +12,15 @@ import (
 )
 
 type AppSettings struct {
-	Name        string `json:"Name"`
-	DisplayName string `json:"DisplayName"`
-	Description string `json:"Description"`
-	ServicePort int64  `json:"Port"`
-	Mode        string `json:"Mode"`
-	WorkDir     string `json:"WorkDir"`
-	Log         string `json:"Log"`
+	Name         string `json:"Name"`
+	DisplayName  string `json:"DisplayName"`
+	Description  string `json:"Description"`
+	ServicePort  int64  `json:"Port"`
+	Mode         string `json:"Mode"`
+	WorkDir      string `json:"WorkDir"`
+	Log          string `json:"Log"`
+	FullPipeSize int    `json:"FullPipeSize"`
+	IncrPipeSize int    `json:"IncrPipeSize"`
 }
 
 func init() {

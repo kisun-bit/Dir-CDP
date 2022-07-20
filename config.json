@@ -5,5 +5,7 @@
   "Port": 5111,
   "Mode": "debug",
   "WorkDir": "C:\\rongan\\cdp",
-  "Log": "C:\\rongan\\log\\rongan-cdp.log"
+  "Log": "C:\\rongan\\log\\rongan-cdp.log",
+  "FullPipeSize": 10000000,
+  "IncrPipeSize": 10000000
 }

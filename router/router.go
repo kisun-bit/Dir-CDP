@@ -1,9 +1,11 @@
 package router
 
 import (
+	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 	"github.com/unrolled/secure"
 	"jingrongshuan/rongan-fnotify/api/v1"
+	"jingrongshuan/rongan-fnotify/meta"
 )
 
 func TlsHandler() gin.HandlerFunc {
@@ -27,7 +29,9 @@ func InitRouter() *gin.Engine {
 	r := gin.Default()
 	r.Use(gin.Logger())
 	r.Use(gin.Recovery())
-
+	if meta.AppIsDebugMode {
+		pprof.Register(r)
+	}
 	apiv1 := r.Group("/api/v1")
 	{
 		// 功能: 初始化数据库接口
@@ -134,6 +138,9 @@ func InitRouter() *gin.Engine {
 		// 参数(Form):
 		//      - share_name 共享名称
 		apiv1.POST("/smb/delete", v1.SMBDelete)
+	}
+	if meta.AppIsDebugMode {
+		pprof.RouteRegister(apiv1, "pprof")
 	}
 	return r
 }

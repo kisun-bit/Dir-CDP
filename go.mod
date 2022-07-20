@@ -8,7 +8,7 @@ require (
 	github.com/boltdb/bolt v1.3.1
 	github.com/cavaliergopher/grab/v3 v3.0.1 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
-	github.com/gin-contrib/pprof v1.3.0 // indirect
+	github.com/gin-contrib/pprof v1.3.0
 	github.com/gin-gonic/gin v1.7.7
 	github.com/go-cmd/cmd v1.4.1
 	github.com/go-openapi/spec v0.20.6 // indirect

@@ -70,7 +70,7 @@ func NewRestoreTask(task *models.RestoreTaskModel, dp *models.DBProxy) (r *Resto
 
 	r.progress = NewProgress(meta.DefaultReportProcessSecs,
 		r.taskObj.ID, r.DBDriver.DB, r.confObj.ExtInfoJson.ServerAddress, meta.TaskTypeRestore)
-	r.queue = make(chan models.EventFileModel, meta.DefaultDRQueueSize)
+	r.queue = make(chan models.EventFileModel, meta.ConfigSettings.FullPipeSize)
 	if r.taskObj.ExtInfoJson.Threads <= 0 {
 		r.taskObj.ExtInfoJson.Threads = runtime.NumCPU()
 	}

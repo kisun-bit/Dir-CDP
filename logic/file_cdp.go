@@ -133,8 +133,8 @@ func initOrResetCDPExecutor(ce *CDPExecutor, config *models.ConfigModel, dp *mod
 		numCores = runtime.NumCPU()
 	}
 
-	ce.fbp = initFullBackupProxy(numCores, meta.DefaultDRQueueSize)
-	ce.ibp = initIncrBackupProxy(numCores, meta.DefaultDRQueueSize)
+	ce.fbp = initFullBackupProxy(numCores, meta.ConfigSettings.FullPipeSize)
+	ce.ibp = initIncrBackupProxy(numCores, meta.ConfigSettings.IncrPipeSize)
 
 	ce.storage = new(storage)
 	ce.startTs = time.Now().Unix()
@@ -399,7 +399,19 @@ func (c *CDPExecutor) stopBackupProxy() {
 	}
 	c.ibp.incrQueueCloseOnce.Do(func() {
 		close(c.ibp.incrQueue)
+		for range c.ibp.incrQueue {
+			// do nothing
+		}
+		c.ibp.incrQueue = nil
 		_ = c.reporter.ReportInfo(StepCloseIncrQueue)
+	})
+	c.fbp.fullQueueCloseOnce.Do(func() {
+		close(c.fbp.fullQueue)
+		for range c.fbp.fullQueue {
+			// do nothing
+		}
+		c.fbp.fullQueue = nil
+		_ = c.reporter.ReportInfo(StepCloseFullQueue)
 	})
 	_ = c.reporter.ReportInfo(StepEndWatchers)
 }
@@ -897,6 +909,8 @@ func (c *CDPExecutor) scanNotify() {
 		c.catchErr(err)
 		c.fbp.fullQueueCloseOnce.Do(func() {
 			close(c.fbp.fullQueue)
+			for range c.fbp.fullQueue {
+			}
 			_ = c.reporter.ReportInfo(StepCloseFullQueue)
 		})
 	}()
