@@ -133,8 +133,8 @@ func initOrResetCDPExecutor(ce *CDPExecutor, config *models.ConfigModel, dp *mod
 		numCores = runtime.NumCPU()
 	}
 
-	ce.fbp = initFullBackupProxy(numCores, meta.ConfigSettings.FullPipeSize)
-	ce.ibp = initIncrBackupProxy(numCores, meta.ConfigSettings.IncrPipeSize)
+	ce.fbp = initFullBackupProxy(numCores, 0)
+	ce.ibp = initIncrBackupProxy(numCores, 0)
 
 	ce.storage = new(storage)
 	ce.startTs = time.Now().Unix()

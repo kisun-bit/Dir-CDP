@@ -17,7 +17,7 @@ import (
 
 const (
 	WatchingBufferSize = 1 << 20
-	WatchingQueueSize  = 100
+	WatchingQueueSize  = 0
 )
 
 type Win32Watcher struct {

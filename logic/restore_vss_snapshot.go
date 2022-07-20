@@ -328,7 +328,7 @@ func (t *SnapshotRestore) copyFilesFromSnapshot2LocalOrigin(s *ShadowCopyIns) (e
 
 func MountSnapshotOnTmpPath(snapshot, path string) (err error) {
 	logger.Fmt.Infof("MountSnapshotOnTmpPath snapshot(%v) to path(%v)", snapshot, path)
-	r, o, e := tools.Process(VShadow, fmt.Sprintf(`-el=%s,%s`, snapshot, path))
+	r, o, e := tools.Process(meta.VShadow, fmt.Sprintf(`-el=%s,%s`, snapshot, path))
 	logger.Fmt.Infof("MountSnapshotOnTmpPath `%s` -> `%s` | r(%v) out(%v) e(%v)", snapshot, path, r, o, e)
 	if r != 0 || e != nil {
 		return fmt.Errorf("failed to expose %v to %v", snapshot, path)

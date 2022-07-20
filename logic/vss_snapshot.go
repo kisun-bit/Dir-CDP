@@ -12,21 +12,12 @@ import (
 	"jingrongshuan/rongan-fnotify/models"
 	"jingrongshuan/rongan-fnotify/tools"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 )
 
-const VShadow = `C:\rongan\cdp\vshadow.exe`
 const PowerShell = "powershell.exe"
-const DiskShadowScriptsDir = `C:\rongan\cdp\tmp`
-
-func init() {
-	if _, err := os.Stat(DiskShadowScriptsDir); err != nil {
-		_ = os.MkdirAll(DiskShadowScriptsDir, meta.DefaultFileMode)
-	}
-}
 
 //var regexShadowCopyVol = regexp.MustCompile(`.*?\((?P<VOL>\w):\)\\\\\?\\VolLetter{(?P<VID>.*?)}`)
 var RegexOriginalVolume = regexp.MustCompile(`\\\\\?\\Volume{(?P<VID>.*?)}\\.*?\[(?P<VOL>\w+):\\\]`)
@@ -340,7 +331,7 @@ func CreateVSS(letter string) (sci ShadowCopyIns, err error) {
 		args = fmt.Sprintf(`-p -nw %v`, letter)
 		type_ = meta.DataVolumeRollback
 	}
-	r, o, err = tools.Process(VShadow, args)
+	r, o, err = tools.Process(meta.VShadow, args)
 	if r != 0 {
 		err = fmt.Errorf("failed to create shadow copy(letter=`%s`) args=`%v` out=%v err=%v", letter, args, o, err)
 		return
@@ -416,7 +407,7 @@ func RevertSnapshotByVssAdmin(snapshot string) (err error) {
 
 func DeleteVSS(snap string) (err error) {
 	cs := fmt.Sprintf(` -ds=%s`, snap)
-	r, o, err := tools.Process(VShadow, cs)
+	r, o, err := tools.Process(meta.VShadow, cs)
 	if r != 0 {
 		err = fmt.Errorf("failed to delete shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
 		return
@@ -426,7 +417,7 @@ func DeleteVSS(snap string) (err error) {
 
 func DetailVSS(snap string) (sci ShadowCopyIns, err error) {
 	cs := fmt.Sprintf(`-s=%s`, snap)
-	r, o, err := tools.Process(VShadow, cs)
+	r, o, err := tools.Process(meta.VShadow, cs)
 	if r != 0 {
 		err = fmt.Errorf("failed to detail shadow copy(id=`%s`) out=%s err=%v", snap, o, err)
 		return

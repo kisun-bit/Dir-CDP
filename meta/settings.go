@@ -12,15 +12,13 @@ import (
 )
 
 type AppSettings struct {
-	Name         string `json:"Name"`
-	DisplayName  string `json:"DisplayName"`
-	Description  string `json:"Description"`
-	ServicePort  int64  `json:"Port"`
-	Mode         string `json:"Mode"`
-	WorkDir      string `json:"WorkDir"`
-	Log          string `json:"Log"`
-	FullPipeSize int    `json:"FullPipeSize"`
-	IncrPipeSize int    `json:"IncrPipeSize"`
+	Name        string `json:"Name"`
+	DisplayName string `json:"DisplayName"`
+	Description string `json:"Description"`
+	ServicePort int64  `json:"Port"`
+	Mode        string `json:"Mode"`
+	WorkDir     string `json:"WorkDir"`
+	Log         string `json:"Log"`
 }
 
 func init() {
@@ -63,6 +61,13 @@ func init() {
 		MountPoints = filepath.Join(ConfigSettings.WorkDir, "exposes")
 		_ = os.MkdirAll(MountPoints, DefaultFileMode)
 	}
+
+	// vss snapshot
+	VShadow = filepath.Join(ConfigSettings.WorkDir, "vshadow.exe")
+	DiskShadowScriptsDir = filepath.Join(ConfigSettings.WorkDir, "tmp")
+	if _, err := os.Stat(DiskShadowScriptsDir); err != nil {
+		_ = os.MkdirAll(DiskShadowScriptsDir, DefaultFileMode)
+	}
 }
 
 const (
@@ -91,13 +96,15 @@ const (
 )
 
 var (
-	ConfigSettings AppSettings
-	IsWin          = runtime.GOOS == "windows" // 系统平台
-	ServerIPs      string                      // 备份服务器IP地址信息（可能存在多个）
-	HandlerBaseDir string                      // 备份过程的锁文件目录
-	SSLCrt         string
-	SSLKey         string
-	MountPoints    string
-	AppIsDebugMode = false
-	Pool           = x509.NewCertPool()
+	ConfigSettings       AppSettings
+	IsWin                = runtime.GOOS == "windows" // 系统平台
+	ServerIPs            string                      // 备份服务器IP地址信息（可能存在多个）
+	HandlerBaseDir       string                      // 备份过程的锁文件目录
+	SSLCrt               string
+	SSLKey               string
+	MountPoints          string
+	AppIsDebugMode       = false
+	VShadow              string
+	DiskShadowScriptsDir string
+	Pool                 = x509.NewCertPool()
 )
